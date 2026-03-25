@@ -669,6 +669,13 @@ async def startup():
     from quant.amd_engine import amd_engine
     tasks.append(asyncio.create_task(amd_engine.run()))
 
+    if config.ML_DOLLAR_BARS_ENABLED:
+        from quant.dollar_bar_engine import get_engine as get_dollar_engine
+        dollar_engine = get_dollar_engine("XAUUSD")
+        tasks.append(asyncio.create_task(
+            _supervise("dollar_bars", dollar_engine.run), name="dollar_bars"
+        ))
+
     logger.info(f"[Main] {len(tasks)} tasks launched. System is live.")
     await asyncio.gather(*tasks)
 

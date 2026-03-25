@@ -369,7 +369,7 @@ ML_REALIZED_VAR_WINDOW: int        = 12        # bars for realized variance comp
 ML_HAR_RV_ENABLED: bool            = True      # Compute HAR-RV volatility forecast
 
 # Dollar bar aggregation (Pillar 5 paradigm shift)
-ML_DOLLAR_BARS_ENABLED: bool       = False     # Set True when tick data collection ready
+ML_DOLLAR_BARS_ENABLED: bool       = True      # Set True when tick data collection ready
 ML_DOLLAR_BAR_SIZE_USD: float      = 50_000_000  # $50M per bar for XAUUSD
 
 # Label backfill: how far forward to look for TP/SL outcome labeling

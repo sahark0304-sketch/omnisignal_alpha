@@ -174,6 +174,76 @@ def init_db():
             lot_size            REAL
         );
         CREATE INDEX IF NOT EXISTS idx_forensics_ticket ON trade_forensics(ticket);
+
+        CREATE TABLE IF NOT EXISTS dollar_bars (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol          TEXT NOT NULL,
+            open_time       TEXT,
+            close_time      TEXT,
+            bar_open        REAL,
+            bar_high        REAL,
+            bar_low         REAL,
+            bar_close       REAL,
+            dollar_volume   REAL,
+            tick_count      INTEGER,
+            vwap            REAL,
+            buy_volume      REAL,
+            sell_volume     REAL,
+            imbalance       REAL,
+            duration_secs   REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_dollar_bars_symbol_time ON dollar_bars(symbol, close_time DESC);
+
+        CREATE TABLE IF NOT EXISTS market_features (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                  TEXT,
+            symbol              TEXT,
+            timeframe           TEXT,
+            bar_open            REAL,
+            bar_high            REAL,
+            bar_low             REAL,
+            bar_close           REAL,
+            tick_volume         INTEGER,
+            log_return          REAL,
+            body_ratio          REAL,
+            upper_wick_pct      REAL,
+            lower_wick_pct      REAL,
+            atr_14              REAL,
+            realized_var        REAL,
+            har_rv_forecast     REAL,
+            vol_z_score         REAL,
+            spread_pips         REAL,
+            spread_percentile   REAL,
+            hurst_50            REAL,
+            hurst_100           REAL,
+            hurst_regime        TEXT,
+            hmm_state           TEXT,
+            hmm_p_trend         REAL,
+            hmm_p_range         REAL,
+            hmm_p_volatile      REAL,
+            session             TEXT,
+            hour_sin            REAL,
+            hour_cos            REAL,
+            dow_sin             REAL,
+            dow_cos             REAL,
+            htf_h4_ema_bias     INTEGER,
+            htf_d1_ema_bias     INTEGER,
+            dist_daily_high_atr REAL,
+            dist_daily_low_atr  REAL,
+            vwap_distance_atr   REAL,
+            ob_zone_proximity   REAL,
+            sweep_detected      INTEGER,
+            confluence_score    REAL,
+            confluence_max      REAL,
+            signal_id           INTEGER,
+            trade_ticket        INTEGER,
+            label_tp1_hit       INTEGER,
+            label_sl_hit        INTEGER,
+            label_pips_pnl      REAL,
+            label_bars_held     INTEGER,
+            label_pnl_r         REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mf_symbol_tf_ts ON market_features(symbol, timeframe, ts DESC);
         """)
     logger.info("[DB] v2.0 schema initialized.")
 
@@ -489,6 +559,47 @@ def get_last_trade_close_time(symbol: str):
         return r[0] if r else None
     except Exception:
         return None
+
+
+def insert_dollar_bar(bar_data: Dict):
+    """Insert a completed dollar bar into the dollar_bars table."""
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO dollar_bars (
+                symbol, open_time, close_time, bar_open, bar_high, bar_low,
+                bar_close, dollar_volume, tick_count, vwap,
+                buy_volume, sell_volume, imbalance, duration_secs
+            ) VALUES (
+                :symbol, :open_time, :close_time, :bar_open, :bar_high, :bar_low,
+                :bar_close, :dollar_volume, :tick_count, :vwap,
+                :buy_volume, :sell_volume, :imbalance, :duration_secs
+            )
+        """, bar_data)
+
+
+def insert_market_features(features: Dict) -> int:
+    """Insert a market features row and return its ID."""
+    cols = [
+        "ts", "symbol", "timeframe", "bar_open", "bar_high", "bar_low", "bar_close",
+        "tick_volume", "log_return", "body_ratio", "upper_wick_pct", "lower_wick_pct",
+        "atr_14", "realized_var", "har_rv_forecast", "vol_z_score", "spread_pips",
+        "spread_percentile", "hurst_50", "hurst_100", "hurst_regime",
+        "hmm_state", "hmm_p_trend", "hmm_p_range", "hmm_p_volatile",
+        "session", "hour_sin", "hour_cos", "dow_sin", "dow_cos",
+        "htf_h4_ema_bias", "htf_d1_ema_bias", "dist_daily_high_atr", "dist_daily_low_atr",
+        "vwap_distance_atr", "ob_zone_proximity", "sweep_detected",
+        "confluence_score", "confluence_max", "signal_id", "trade_ticket",
+        "label_tp1_hit", "label_sl_hit", "label_pips_pnl", "label_bars_held", "label_pnl_r",
+    ]
+    filtered = {k: features.get(k) for k in cols}
+    col_str = ", ".join(filtered.keys())
+    val_str = ", ".join(f":{k}" for k in filtered.keys())
+    with get_connection() as conn:
+        cur = conn.execute(
+            f"INSERT INTO market_features ({col_str}) VALUES ({val_str})",
+            filtered,
+        )
+        return cur.lastrowid
 
 
 def insert_forensic(data: Dict):
