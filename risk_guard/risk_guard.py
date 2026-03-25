@@ -149,11 +149,21 @@ async def validate(
         return _reject(f"Trading halted: {halt_reason}", "HALT")
 
     # ── 1. Daily drawdown ─────────────────────────────────────────────────────
-    daily_pnl = db_manager.get_daily_pnl()
-    max_loss   = account_equity * (config.DAILY_DRAWDOWN_LIMIT_PCT / 100.0)
-    if daily_pnl < 0 and abs(daily_pnl) >= max_loss:
-        halt_trading(f"Daily drawdown ${daily_pnl:.2f} ≥ limit ${-max_loss:.2f}")
-        return _reject(HALT_REASON, "DRAWDOWN")
+    opening_equity = db_manager.get_opening_equity()
+    if opening_equity and opening_equity > 0:
+        daily_dd_pct = ((opening_equity - account_equity) / opening_equity) * 100.0
+        if daily_dd_pct >= config.DAILY_DRAWDOWN_LIMIT_PCT:
+            halt_trading(
+                f"Daily DD {daily_dd_pct:.2f}% >= {config.DAILY_DRAWDOWN_LIMIT_PCT}% "
+                f"(opening=${opening_equity:,.2f} current=${account_equity:,.2f})"
+            )
+            return _reject(HALT_REASON, "DRAWDOWN")
+        dd_fraction = daily_dd_pct / config.DAILY_DRAWDOWN_LIMIT_PCT
+        if dd_fraction >= config.DD_BLOCK_THRESHOLD_PCT:
+            return _reject(
+                f"DD at {daily_dd_pct:.1f}% — {dd_fraction:.0%} of daily limit. "
+                f"Blocking new entries.", "DD_BLOCK"
+            )
 
     # ── TELEGRAM FAST-TRACK (v4.2: Expert Pipeline + Sniper Entry) ──────────
     is_telegram = not signal.raw_source.startswith("AUTO_")
@@ -240,6 +250,49 @@ async def validate(
                 "lot": lot_size,
                 "sniper_boost": sniper_boost,
             })
+
+            # v4.4-audit: Safety checks that MUST apply even to fast-track
+            # Spread guard
+            try:
+                import MetaTrader5 as _mt5
+                _sym_info = _mt5.symbol_info(signal.symbol)
+                if _sym_info:
+                    _ft_spread = _sym_info.spread * pip_size / pip_size
+                    if _ft_spread > config.MT5_MAX_SPREAD_PIPS:
+                        return _reject(
+                            f"FAST-TRACK SPREAD VETO: {_ft_spread:.1f}p > "
+                            f"max {config.MT5_MAX_SPREAD_PIPS}p",
+                            "FT_SPREAD",
+                        )
+            except Exception:
+                pass
+
+            # News filter
+            await news_filter.refresh_if_needed()
+            _ft_blocked, _ft_news_reason = news_filter.is_blocked(signal.symbol)
+            if _ft_blocked:
+                return _reject(f"FAST-TRACK NEWS VETO: {_ft_news_reason}", "FT_NEWS")
+
+            # Concurrent trade limit
+            _ft_open = db_manager.get_open_trades()
+            _ft_abs_limit = config.MAX_CONCURRENT_TRADES + config.VIP_OVERFLOW_SLOTS
+            if len(_ft_open) >= _ft_abs_limit:
+                return _reject(
+                    f"FAST-TRACK CAPACITY VETO: {len(_ft_open)}/{_ft_abs_limit} slots full",
+                    "FT_MAX_TRADES",
+                )
+
+            # Exposure guard
+            from quant.exposure_guard import check_exposure
+            _ft_exp_ok, _ft_exp_reason = check_exposure(
+                new_symbol=signal.symbol,
+                new_action=signal.action,
+                new_risk_amount=sizing.risk_amount,
+                account_equity=account_equity,
+            )
+            if not _ft_exp_ok:
+                return _reject(f"FAST-TRACK EXPOSURE VETO: {_ft_exp_reason}", "FT_EXPOSURE")
+
             logger.info(
                 "[RiskGuard] FAST-TRACK APPROVED: %s | lots=%.2f | tier=%s%s",
                 signal.raw_source, lot_size, alpha_tier, sniper_tag,

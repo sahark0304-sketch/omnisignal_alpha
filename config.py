@@ -287,8 +287,8 @@ ATR_MULTIPLIER: float            = 1.5
 KELLY_ENABLED: bool              = True
 KELLY_MIN_TRADES: int            = 15
 KELLY_FRACTION: float            = 0.65
-KELLY_MAX_RISK_PCT: float        = 7.0
-RISK_PER_TRADE_PCT: float        = 3.0     # Raised from 0.75%: $5K * 1.5% = $78 risk per trade
+KELLY_MAX_RISK_PCT: float        = 2.0
+RISK_PER_TRADE_PCT: float        = 0.75    # Prop-firm safe: $10K * 0.75% = $75 risk per trade
 
 
 # ─────────────────────────────────────────────────────────────────────────────

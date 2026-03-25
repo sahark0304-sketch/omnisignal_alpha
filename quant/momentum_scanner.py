@@ -385,14 +385,13 @@ class MomentumScanner:
             "poll_interval": self._poll_interval,
         }
 
+    @property
+    def pressure(self) -> float:
+        return self._last_pressure
+
 
 # -----------------------------------------------------------------------
 #  Module-Level Singleton
 # -----------------------------------------------------------------------
-
-
-    @property
-    def pressure(self) -> float:
-        return self._last_pressure
 
 momentum_scanner = MomentumScanner()

@@ -1,4 +1,4 @@
-﻿"""
+"""
 quant/mean_reversion_engine.py -- Scanner #5: Tick-Level Mean-Reversion Engine
 OmniSignal Alpha v3.0
 
@@ -430,14 +430,13 @@ class MeanReversionEngine:
             ),
         }
 
+    @property
+    def pressure(self) -> float:
+        return self._last_pressure
+
 
 # -----------------------------------------------------------------------
 #  Module-Level Singleton
 # -----------------------------------------------------------------------
-
-
-    @property
-    def pressure(self) -> float:
-        return self._last_pressure
 
 mr_engine = MeanReversionEngine()

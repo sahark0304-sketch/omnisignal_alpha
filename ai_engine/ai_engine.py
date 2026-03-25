@@ -92,7 +92,7 @@ async def classify_message(text: str) -> str:
         word = response.text.strip().upper().split()[0]
         return word if word in ("SIGNAL", "CANCEL", "UPDATE", "CLOSE", "NOISE") else "NOISE"
     except Exception:
-        return "SIGNAL"   # fail-open — let the full parser decide
+        return "NOISE"
 
 
 # ── STAGE 2: FULL PARSE PROMPT (with learned corrections injected) ──────────

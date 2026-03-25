@@ -1,4 +1,4 @@
-﻿"""
+"""
 quant/liquidity_scanner.py -- M1 Liquidity Sweep Scanner (OmniSignal Alpha v3.0)
 
 Autonomous background scanner that polls XAUUSD M1 data for institutional
@@ -387,14 +387,13 @@ class LiquidityScanner:
             "poll_interval": self._poll_interval,
         }
 
+    @property
+    def pressure(self) -> float:
+        return self._last_pressure
+
 
 # -----------------------------------------------------------------------
 #  Module-Level Singleton
 # -----------------------------------------------------------------------
-
-
-    @property
-    def pressure(self) -> float:
-        return self._last_pressure
 
 liquidity_scanner = LiquidityScanner()

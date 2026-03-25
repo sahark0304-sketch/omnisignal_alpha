@@ -451,14 +451,13 @@ class TickFlowEngine:
             ),
         }
 
+    @property
+    def pressure(self) -> float:
+        return self._last_pressure
+
 
 # -----------------------------------------------------------------------
 #  Module-Level Singleton
 # -----------------------------------------------------------------------
-
-
-    @property
-    def pressure(self) -> float:
-        return self._last_pressure
 
 tick_flow_engine = TickFlowEngine()
