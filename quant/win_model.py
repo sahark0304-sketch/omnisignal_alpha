@@ -34,6 +34,13 @@ try:
 except ImportError:
     logger.info("[ML-Brain] xgboost not installed -- shadow model disabled")
 
+_shap_available = False
+try:
+    import shap
+    _shap_available = True
+except ImportError:
+    logger.info("[ML-Brain] shap not installed -- explainability disabled")
+
 
 # ---------------------------------------------------------------------------
 #  Canonical feature vector (18 features)
@@ -115,6 +122,7 @@ class WinProbabilityModel:
         self._active_feature_names: List[str] = list(FEATURE_NAMES)
         self._xgb_model: Optional[object] = None
         self._xgb_cv_score: float = 0.0
+        self._shap_explainer: Optional[object] = None
         self._best_params: Dict = {
             "n_estimators": 200,
             "max_depth": 8,
@@ -226,6 +234,44 @@ class WinProbabilityModel:
             "rf_status": self._state.status,
             "n_samples": self._state.n_samples,
         }
+
+    def explain_prediction(self, features: Dict) -> Optional[Dict]:
+        """Return per-feature SHAP values for a single prediction, sorted by |impact|.
+        Used by post-trade forensic callback for Explainable AI."""
+        if not _shap_available or self._model is None or self._scaler is None:
+            return None
+        try:
+            if self._shap_explainer is None:
+                self._shap_explainer = shap.TreeExplainer(self._model)
+
+            X = self._engineer_single(features)
+            if X is None:
+                return None
+            X_scaled = self._scaler.transform(X.reshape(1, -1))
+            shap_values = self._shap_explainer.shap_values(X_scaled)
+
+            if isinstance(shap_values, list):
+                sv = shap_values[1][0]  # class=1 (WIN)
+            else:
+                sv = shap_values[0]
+
+            feat_names = self._active_feature_names
+            pairs = list(zip(feat_names, sv))
+            pairs.sort(key=lambda kv: abs(kv[1]), reverse=True)
+
+            return {
+                "shap_drivers": [
+                    {"feature": name, "shap_value": round(float(val), 4)}
+                    for name, val in pairs[:10]
+                ],
+                "top5_summary": ", ".join(
+                    f"{name}={'+' if val>0 else ''}{val:.3f}"
+                    for name, val in pairs[:5]
+                ),
+            }
+        except Exception as e:
+            logger.debug("[ML-Brain] SHAP explain_prediction failed: %s", e)
+            return None
 
     def check_and_retrain(self):
         """Called after a trade closes.  Retrains if enough new data.
@@ -508,6 +554,19 @@ class WinProbabilityModel:
 
         self._save_model()
 
+        # Recompute SHAP explainer after retrain
+        if _shap_available and self._model is not None:
+            try:
+                self._shap_explainer = shap.TreeExplainer(self._model)
+                report_lines.append("--- SHAP Explainer: recomputed successfully ---")
+                report_lines.append("")
+                logger.info("[ML-Brain] SHAP TreeExplainer recomputed after nightly retrain.")
+            except Exception as e:
+                self._shap_explainer = None
+                report_lines.append(f"--- SHAP Explainer: FAILED ({e}) ---")
+                report_lines.append("")
+                logger.warning("[ML-Brain] SHAP explainer recompute failed: %s", e)
+
         # Breakthrough #2: Check for feature importance drift
         try:
             self._detect_feature_drift(X_scaled, y)
@@ -712,6 +771,14 @@ class WinProbabilityModel:
             )
 
         self._save_model()
+
+        if _shap_available and self._model is not None:
+            try:
+                self._shap_explainer = shap.TreeExplainer(self._model)
+                logger.info("[ML-Brain] SHAP TreeExplainer recomputed after retrain.")
+            except Exception as e:
+                self._shap_explainer = None
+                logger.debug("[ML-Brain] SHAP explainer failed: %s", e)
 
         if getattr(config, "WIN_MODEL_AUTO_ENABLE", False) and not getattr(config, "WIN_MODEL_ENABLED", False):
             min_acc = getattr(config, "WIN_MODEL_AUTO_ENABLE_MIN_ACC", 0.55)
@@ -981,6 +1048,7 @@ class WinProbabilityModel:
             saved_state = data.get("state")
             self._last_train_count = data.get("last_train_count", 0)
             self._xgb_model = data.get("xgb_model")
+            self._shap_explainer = None  # recomputed lazily
             loaded_names = data.get("feature_names")
             if loaded_names and len(loaded_names) != len(FEATURE_NAMES):
                 logger.warning(

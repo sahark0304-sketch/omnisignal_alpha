@@ -432,6 +432,31 @@ elif page == "📈 Performance KPIs":
         except Exception as e:
             st.caption(f"ML comparison unavailable: {e}")
 
+        st.divider()
+
+        # Row 6: SHAP Feature Impact
+        st.subheader("SHAP Feature Impact (Last RF Retrain)")
+        try:
+            from quant.win_model import win_model as _wm
+            if _wm._shap_explainer is not None and _wm._model is not None:
+                import shap as _shap
+                feat_imp = _wm._state.feature_importances
+                if feat_imp:
+                    df_shap = pd.DataFrame([
+                        {"Feature": k, "Importance": v}
+                        for k, v in sorted(feat_imp.items(), key=lambda x: x[1], reverse=True)[:15]
+                    ])
+                    st.bar_chart(df_shap.set_index("Feature")["Importance"])
+                    st.caption("SHAP TreeExplainer is active. Per-trade SHAP values are appended to trade forensics.")
+                else:
+                    st.info("Feature importances not yet computed.")
+            else:
+                st.info("SHAP explainer not yet initialized (activates after first RF retrain with shap installed).")
+        except ImportError:
+            st.caption("shap package not installed \u2014 feature impact visualization unavailable.")
+        except Exception as e:
+            st.caption(f"SHAP visualization error: {e}")
+
 
 
 

@@ -315,6 +315,23 @@ async def post_trade_forensic(ticket: int, pnl: float, tp1_hit: bool, entry_pric
             "amd_phase": amd_at_close.get("phase", "UNKNOWN"),
         }
 
+        # SHAP Explainability: append top drivers to forensic record
+        try:
+            shap_result = win_model.explain_prediction({
+                "symbol": symbol, "action": action,
+                "ai_confidence": forensic.get("consensus_at_close", 7),
+            })
+            if shap_result:
+                forensic["shap_top5"] = shap_result["top5_summary"]
+                lesson = (
+                    f"{result} ${pnl:+.2f} | {efficiency} | "
+                    f"SHAP drivers: {shap_result['top5_summary']}"
+                )
+                forensic["lesson_learned"] = lesson
+                logger.info("[Forensic] SHAP lesson: %s", lesson)
+        except Exception as _shap_err:
+            logger.debug("[Forensic] SHAP unavailable: %s", _shap_err)
+
         db_manager.log_audit("POST_TRADE_FORENSIC", forensic)
 
         # Immediate ML retraining trigger
