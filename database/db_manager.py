@@ -602,6 +602,28 @@ def insert_market_features(features: Dict) -> int:
         return cur.lastrowid
 
 
+def get_recent_closed_trades_with_session(limit: int = 200) -> List[Dict]:
+    """Fetch closed trades with session info for KPI computation."""
+    try:
+        with get_connection() as conn:
+            rows = conn.execute("""
+                SELECT t.ticket, t.symbol, t.action, t.lot_size,
+                       t.entry_price, t.close_price, t.pnl,
+                       t.open_time, t.close_time, t.sl_price,
+                       t.tp1_price, t.status,
+                       s.source, s.ai_confidence, s.session
+                FROM trades t
+                LEFT JOIN signals s ON t.signal_id = s.id
+                WHERE t.status = 'CLOSED'
+                ORDER BY t.close_time DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"[DB] get_recent_closed_trades_with_session failed: {e}")
+        return []
+
+
 def insert_forensic(data: Dict):
     """Insert a per-trade forensic snapshot."""
     with get_connection() as conn:

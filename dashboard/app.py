@@ -105,7 +105,7 @@ with st.sidebar:
 
     st.divider()
     refresh = st.slider("Refresh (s)", 5, 60, 15)
-    page    = st.radio("Page", ["📊 Overview", "🏆 Alpha Ranker",
+    page    = st.radio("Page", ["📊 Overview", "📈 Performance KPIs", "🏆 Alpha Ranker",
                                  "🔍 Black Box", "🌡 Exposure", "⚙️ Self-Correction"])
 
 
@@ -237,6 +237,182 @@ if page == "📊 Overview":
             )
     except Exception as e:
         st.error(f"DB error: {e}")
+
+
+elif page == "📈 Performance KPIs":
+
+    @st.cache_data(ttl=30)
+    def _fetch_kpi_trades():
+        return db_manager.get_recent_closed_trades_with_session(500)
+
+    kpi_trades = _fetch_kpi_trades()
+
+    if not kpi_trades:
+        st.info("No closed trades yet. KPIs will populate after the first trade closes.")
+    else:
+        kpi_trades_chrono = list(reversed(kpi_trades))
+
+        # Row 1: Core KPI metric cards
+        st.subheader("Core KPIs")
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+
+        all_pnls = [t["pnl"] for t in kpi_trades_chrono if t.get("pnl") is not None]
+        wins_all = [p for p in all_pnls if p > 0]
+        losses_all = [p for p in all_pnls if p <= 0]
+
+        last20 = all_pnls[-20:] if len(all_pnls) >= 20 else all_pnls
+        wr20 = sum(1 for p in last20 if p > 0) / len(last20) * 100 if last20 else 0
+        prev20 = all_pnls[-40:-20] if len(all_pnls) >= 40 else []
+        wr20_prev = sum(1 for p in prev20 if p > 0) / len(prev20) * 100 if prev20 else None
+        wr20_delta = f"{wr20 - wr20_prev:+.1f}%" if wr20_prev is not None else None
+
+        last100 = all_pnls[-100:] if len(all_pnls) >= 100 else all_pnls
+        wr100 = sum(1 for p in last100 if p > 0) / len(last100) * 100 if last100 else 0
+
+        pf_num = sum(wins_all) if wins_all else 0
+        pf_den = abs(sum(losses_all)) if losses_all else 0
+        pf = pf_num / pf_den if pf_den > 0 else float("inf")
+        pf_str = f"{pf:.2f}" if pf != float("inf") else "∞"
+
+        avg_win = sum(wins_all) / len(wins_all) if wins_all else 0
+        avg_loss = abs(sum(losses_all) / len(losses_all)) if losses_all else 0
+        avg_rr = avg_win / avg_loss if avg_loss > 0 else float("inf")
+        rr_str = f"{avg_rr:.2f}" if avg_rr != float("inf") else "∞"
+
+        expectancy = sum(all_pnls) / len(all_pnls) if all_pnls else 0
+
+        consec_losses = 0
+        for p in reversed(all_pnls):
+            if p <= 0:
+                consec_losses += 1
+            else:
+                break
+
+        k1.metric("Win Rate (20)", f"{wr20:.1f}%", delta=wr20_delta)
+        k2.metric("Win Rate (100)", f"{wr100:.1f}%")
+        k3.metric("Profit Factor", pf_str)
+        k4.metric("Avg R:R", rr_str)
+        k5.metric("Expectancy", f"")
+        k6.metric("Consec Losses", consec_losses)
+
+        st.divider()
+
+        # Row 2: Rolling charts
+        st.subheader("Rolling Performance")
+        col_eq, col_wr = st.columns(2)
+
+        with col_eq:
+            st.markdown("**Equity Curve**")
+            curve_data = db_manager.get_equity_curve(limit=288)
+            if curve_data:
+                df_eq = pd.DataFrame(curve_data)
+                df_eq["ts"] = pd.to_datetime(df_eq["ts"])
+                st.line_chart(df_eq.set_index("ts")["equity"])
+            else:
+                st.caption("Equity snapshots not yet available.")
+
+        with col_wr:
+            st.markdown("**Rolling Win Rate (20-trade window)**")
+            if len(all_pnls) >= 20:
+                rolling_wr = []
+                for i in range(19, len(all_pnls)):
+                    window = all_pnls[i - 19 : i + 1]
+                    wr_val = sum(1 for p in window if p > 0) / 20.0 * 100
+                    rolling_wr.append({"Trade": i + 1, "WR%": wr_val})
+                df_rwr = pd.DataFrame(rolling_wr)
+                st.line_chart(df_rwr.set_index("Trade")["WR%"])
+            else:
+                st.caption(f"Need 20 trades for rolling WR (have {len(all_pnls)}).")
+
+        st.divider()
+
+        # Row 3: Session Breakdown
+        st.subheader("Session Breakdown")
+        session_hours = getattr(config, "SESSION_HOURS_UTC", {})
+
+        def _derive_session(open_time_str):
+            try:
+                from datetime import datetime as _dt
+                if isinstance(open_time_str, str):
+                    ot = _dt.fromisoformat(open_time_str)
+                else:
+                    ot = open_time_str
+                h = ot.hour
+                for name, (s, e) in session_hours.items():
+                    if s < e:
+                        if s <= h < e:
+                            return name
+                    else:
+                        if h >= s or h < e:
+                            return name
+                return "OTHER"
+            except Exception:
+                return "UNKNOWN"
+
+        session_stats = {}
+        for t in kpi_trades_chrono:
+            sess = t.get("session") or _derive_session(t.get("open_time"))
+            if sess not in session_stats:
+                session_stats[sess] = {"trades": 0, "wins": 0, "pnls": [], "best": None, "worst": None}
+            s = session_stats[sess]
+            pnl_val = t.get("pnl") or 0
+            s["trades"] += 1
+            if pnl_val > 0:
+                s["wins"] += 1
+            s["pnls"].append(pnl_val)
+            if s["best"] is None or pnl_val > s["best"]:
+                s["best"] = pnl_val
+            if s["worst"] is None or pnl_val < s["worst"]:
+                s["worst"] = pnl_val
+
+        sess_rows = []
+        for name in ["LONDON", "OVERLAP", "NY", "ASIA", "OTHER", "UNKNOWN"]:
+            if name not in session_stats:
+                continue
+            s = session_stats[name]
+            wr_pct = s["wins"] / s["trades"] * 100 if s["trades"] > 0 else 0
+            net = sum(s["pnls"])
+            avg = net / s["trades"] if s["trades"] > 0 else 0
+            sess_rows.append({
+                "Session": name,
+                "Trades": s["trades"],
+                "Wins": s["wins"],
+                "WR%": f"{wr_pct:.1f}%",
+                "Net PnL": f"",
+                "Avg PnL": f"",
+                "Best": f"" if s["best"] is not None else "-",
+                "Worst": f"" if s["worst"] is not None else "-",
+            })
+
+        if sess_rows:
+            st.dataframe(pd.DataFrame(sess_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No session data available.")
+
+        st.divider()
+
+        # Row 4: Upcoming Gold News Events
+        st.subheader("Upcoming Gold-Sensitive News (24h)")
+        try:
+            import asyncio as _aio
+            from news_filter.news_filter import NewsFilter as _NF
+
+            @st.cache_data(ttl=300)
+            def _fetch_gold_news():
+                nf = _NF()
+                _aio.run(nf.refresh_if_needed())
+                return nf.get_upcoming_gold_events(24)
+
+            gold_events = _fetch_gold_news()
+            if gold_events:
+                st.dataframe(pd.DataFrame(gold_events), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No upcoming gold-sensitive events in the next 24 hours.")
+        except Exception as e:
+            st.caption(f"News data unavailable: {e}")
+
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
