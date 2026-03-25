@@ -27,6 +27,13 @@ try:
 except ImportError:
     logger.warning("[ML-Brain] scikit-learn not installed -- model will stay DORMANT")
 
+_xgb_available = False
+try:
+    import xgboost as xgb
+    _xgb_available = True
+except ImportError:
+    logger.info("[ML-Brain] xgboost not installed -- shadow model disabled")
+
 
 # ---------------------------------------------------------------------------
 #  Canonical feature vector (18 features)
@@ -106,6 +113,8 @@ class WinProbabilityModel:
         self._min_prob = getattr(config, "WIN_MODEL_MIN_PROB", 0.55)
         self._last_train_count = 0
         self._active_feature_names: List[str] = list(FEATURE_NAMES)
+        self._xgb_model: Optional[object] = None
+        self._xgb_cv_score: float = 0.0
         self._best_params: Dict = {
             "n_estimators": 200,
             "max_depth": 8,
@@ -193,6 +202,30 @@ class WinProbabilityModel:
             return round(prob, 4)
         except Exception:
             return None
+
+    def shadow_predict_xgb(self, features: Dict) -> Optional[float]:
+        """XGBoost shadow prediction — strictly logging, never blocks trades."""
+        if self._xgb_model is None or self._scaler is None:
+            return None
+        try:
+            X = self._engineer_single(features)
+            if X is None:
+                return None
+            X_scaled = self._scaler.transform(X.reshape(1, -1))
+            prob = float(self._xgb_model.predict_proba(X_scaled)[0, 1])
+            return round(prob, 4)
+        except Exception:
+            return None
+
+    def get_shadow_comparison(self) -> Dict:
+        """Return RF vs XGBoost CV scores for dashboard display."""
+        return {
+            "rf_cv": round(self._state.accuracy_cv, 4),
+            "xgb_cv": round(self._xgb_cv_score, 4),
+            "xgb_available": _xgb_available and self._xgb_model is not None,
+            "rf_status": self._state.status,
+            "n_samples": self._state.n_samples,
+        }
 
     def check_and_retrain(self):
         """Called after a trade closes.  Retrains if enough new data.
@@ -407,6 +440,40 @@ class WinProbabilityModel:
         importances = rf_best.feature_importances_
         feat_imp_pairs = list(zip(self._active_feature_names, importances))
         feat_imp_pairs.sort(key=lambda kv: kv[1], reverse=True)
+
+        # --- XGBoost Shadow Model ---
+        xgb_cv_score = 0.0
+        if _xgb_available and len(X_list) >= 100:
+            try:
+                xgb_model = xgb.XGBClassifier(
+                    n_estimators=200, max_depth=6, learning_rate=0.05,
+                    subsample=0.8, colsample_bytree=0.8,
+                    eval_metric="logloss",
+                    random_state=42, n_jobs=-1,
+                )
+                n_folds_xgb = min(5, max(2, len(X_list) // 10))
+                skf_xgb = StratifiedKFold(n_splits=n_folds_xgb, shuffle=True, random_state=42)
+                xgb_scores = cross_val_score(xgb_model, X_scaled, y, cv=skf_xgb, scoring="accuracy")
+                xgb_cv_score = float(np.mean(xgb_scores))
+                xgb_model.fit(X_scaled, y)
+                self._xgb_model = xgb_model
+                self._xgb_cv_score = xgb_cv_score
+                winner = "XGBoost" if xgb_cv_score > best_score else "RandomForest"
+                report_lines.append("--- XGBoost Shadow ---")
+                report_lines.append(f"  XGB CV={xgb_cv_score:.4f} vs RF CV={best_score:.4f}")
+                report_lines.append(f"  Shadow winner: {winner}")
+                report_lines.append("")
+                logger.info(
+                    "[ML-Brain] XGBoost shadow: CV=%.4f vs RF CV=%.4f -> %s",
+                    xgb_cv_score, best_score, winner,
+                )
+            except Exception as e:
+                report_lines.append(f"--- XGBoost Shadow FAILED: {e} ---")
+                report_lines.append("")
+                logger.warning("[ML-Brain] XGBoost shadow training failed: %s", e)
+        elif _xgb_available:
+            report_lines.append("--- XGBoost Shadow: skipped (need >=100 samples) ---")
+            report_lines.append("")
 
         report_lines.append("--- Feature Importances ---")
         pruned_features = []
@@ -896,6 +963,7 @@ class WinProbabilityModel:
                     "last_train_count": self._last_train_count,
                     "feature_names": list(self._active_feature_names),
                     "best_params": dict(self._best_params),
+                    "xgb_model": self._xgb_model,
                 }, f)
             logger.info(f"[ML-Brain] Model saved to {self._model_path}")
         except Exception as e:
@@ -912,6 +980,7 @@ class WinProbabilityModel:
             self._scaler = data.get("scaler")
             saved_state = data.get("state")
             self._last_train_count = data.get("last_train_count", 0)
+            self._xgb_model = data.get("xgb_model")
             loaded_names = data.get("feature_names")
             if loaded_names and len(loaded_names) != len(FEATURE_NAMES):
                 logger.warning(

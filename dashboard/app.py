@@ -411,6 +411,27 @@ elif page == "📈 Performance KPIs":
         except Exception as e:
             st.caption(f"News data unavailable: {e}")
 
+        st.divider()
+
+        # Row 5: ML Model Comparison
+        st.subheader("ML Model Comparison")
+        try:
+            from quant.win_model import win_model
+            comparison = win_model.get_shadow_comparison()
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("RF Status", comparison["rf_status"])
+            mc2.metric("RF CV Accuracy", f"{comparison['rf_cv']:.1%}" if comparison['rf_cv'] > 0 else "N/A")
+            if comparison["xgb_available"]:
+                mc3.metric("XGB CV Accuracy", f"{comparison['xgb_cv']:.1%}")
+                winner = "XGBoost" if comparison["xgb_cv"] > comparison["rf_cv"] else "RandomForest"
+                if comparison["rf_cv"] > 0 and comparison["xgb_cv"] > 0:
+                    st.info(f"Shadow comparison winner: **{winner}** (RF={comparison['rf_cv']:.4f} vs XGB={comparison['xgb_cv']:.4f}) | Samples: {comparison['n_samples']}")
+            else:
+                mc3.metric("XGB Shadow", "Not available")
+                st.caption("XGBoost shadow model activates after 100+ training samples and nightly optimization.")
+        except Exception as e:
+            st.caption(f"ML comparison unavailable: {e}")
+
 
 
 
