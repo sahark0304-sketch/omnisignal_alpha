@@ -1,5 +1,5 @@
 """
-dashboard/app.py — OmniSignal Alpha v2.0
+dashboard/app.py — OmniSignal Alpha v4.6
 Pillar 10: Institutional-Grade Dashboard
 
 New vs v1.1:
@@ -28,13 +28,13 @@ from risk_guard import risk_guard
 import config
 
 st.set_page_config(
-    page_title="OmniSignal Alpha v2.0",
+    page_title="OmniSignal Alpha v4.6",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown("""
+st.html("""
 <style>
 :root { --primary: #00ff88; --warn: #ffaa00; --danger: #ff4444; --bg: #0e0e1a; }
 .main-header { font-size:2rem; font-weight:700; color:var(--primary); margin-bottom:0; }
@@ -50,16 +50,15 @@ div[data-testid="metric-container"] { background:#1a1a2e; border-radius:10px; pa
 .lat-safety { color:#ff8800; }
 .lat-critical { color:#ff4444; }
 </style>
-""", unsafe_allow_html=True)
+""")
 
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## ⚡ OmniSignal Alpha v2.0")
+    st.markdown("## ⚡ OmniSignal Alpha v4.6")
     mode_color = "#00ff88" if config.OPERATING_MODE == "LIVE" else "#ffaa00"
-    st.markdown(f'<span style="color:{mode_color}; font-weight:bold;">● {config.OPERATING_MODE}</span>',
-                unsafe_allow_html=True)
+    st.html(f'<span style="color:{mode_color}; font-weight:bold;">● {config.OPERATING_MODE}</span>')
     st.divider()
 
     # Latency widget
@@ -72,10 +71,9 @@ with st.sidebar:
             "SAFETY": "lat-safety", "CRITICAL": "lat-critical",
             "UNREACHABLE": "lat-critical", "INIT": "lat-warn",
         }.get(ls.mode, "lat-warn")
-        st.markdown(
+        st.html(
             f'<span class="{mode_css}">● {ls.mode}</span> '
-            f'`{ls.avg_ms:.0f}ms avg` | `±{ls.jitter_ms:.0f}ms jitter`',
-            unsafe_allow_html=True,
+            f'<code>{ls.avg_ms:.0f}ms avg</code> | <code>±{ls.jitter_ms:.0f}ms jitter</code>'
         )
     except Exception:
         st.caption("Latency monitor not running")
@@ -111,9 +109,8 @@ with st.sidebar:
 
 # ── HEADER ────────────────────────────────────────────────────────────────────
 
-st.markdown('<div class="main-header">⚡ OmniSignal Alpha</div>', unsafe_allow_html=True)
-st.markdown(f'<div class="version-tag">v2.0 | {pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}</div>',
-            unsafe_allow_html=True)
+st.html('<div class="main-header">⚡ OmniSignal Alpha v4.6</div>')
+st.html(f'<div class="version-tag">v4.6 | {pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}</div>')
 st.divider()
 
 
