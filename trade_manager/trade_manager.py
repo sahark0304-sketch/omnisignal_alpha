@@ -14,7 +14,7 @@ from typing import Dict, Set, Optional, Callable
 import config
 from mt5_executor import mt5_executor
 from database import db_manager
-from utils.logger import get_logger
+from utils.logger import get_logger, get_trade_logger
 from utils.notifier import notify
 
 logger = get_logger(__name__)
@@ -214,6 +214,7 @@ async def _handle_position_closed(ticket: int):
 
         db_manager.close_trade(ticket, close_price, pnl)
         logger.info(f"[TradeManager] Closed ticket:{ticket} @ {close_price:.5f} PnL:${pnl:.2f}")
+        get_trade_logger().info("CLOSE | ticket=%d | pnl=%.2f close_price=%.5f", ticket, pnl, close_price)
 
         if config.NOTIFY_ON_TRADE_CLOSE and abs(pnl) > 0:
             emoji = "✅" if pnl >= 0 else "❌"

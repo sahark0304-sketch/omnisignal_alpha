@@ -70,3 +70,32 @@ def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.propagate = True
     return logger
+
+
+_trade_logger = None
+
+
+def get_trade_logger() -> logging.Logger:
+    """Return a dedicated trade-event logger writing ONLY to logs/trades.log."""
+    global _trade_logger
+    if _trade_logger is not None:
+        return _trade_logger
+    _init_root_handlers()
+    tl = logging.getLogger("omnisignal.trades")
+    tl.propagate = False
+    tl.setLevel(logging.INFO)
+    trade_fmt = logging.Formatter(
+        fmt="%(asctime)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    tfh = RotatingFileHandler(
+        os.path.join(LOG_DIR, "trades.log"),
+        maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    tfh.setLevel(logging.INFO)
+    tfh.setFormatter(trade_fmt)
+    tl.addHandler(tfh)
+    _trade_logger = tl
+    return tl
+

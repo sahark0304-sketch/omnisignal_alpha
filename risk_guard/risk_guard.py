@@ -37,7 +37,7 @@ from quant.htf_filter import (
     check_htf_trend_gate,
 )
 from mt5_executor import mt5_executor
-from utils.logger import get_logger
+from utils.logger import get_logger, get_trade_logger
 from utils.notifier import notify
 
 logger = get_logger(__name__)
@@ -138,6 +138,7 @@ async def validate(
             "source": signal.raw_source, "reason": reason, "stage": stage
         })
         logger.info(f"[RiskGuard] ❌ {signal.symbol} {signal.action} — {reason}")
+        get_trade_logger().info("REJECT | %s | %s | stage=%s reason=%s", signal.symbol, signal.action, stage, reason[:120])
         if trace:
             trace.set_risk(False, reason)
             trace.set_execution("REJECTED")
@@ -737,6 +738,7 @@ async def validate(
         f"Lots:{sizing.lot_size} ({sizing.risk_pct:.2f}%) Method:{sizing.method} "
         f"Tier:{alpha_tier} Mult:{alpha_mult:.2f}x AI:{signal.confidence}/10×"
     )
+    get_trade_logger().info("APPROVE | %s | %s | lots=%.2f tier=%s method=%s", signal.symbol, signal.action, sizing.lot_size, alpha_tier, sizing.method)
     db_manager.log_audit("RISK_APPROVED", {
         "symbol": signal.symbol, "action": signal.action, "lot": sizing.lot_size,
         "risk_pct": sizing.risk_pct, "method": sizing.method, "tier": alpha_tier,

@@ -16,7 +16,7 @@ from typing import Optional, Tuple, Dict, List
 import MetaTrader5 as mt5
 import config
 from database import db_manager
-from utils.logger import get_logger
+from utils.logger import get_logger, get_trade_logger
 from utils.notifier import notify
 
 logger = get_logger(__name__)
@@ -318,6 +318,7 @@ def modify_sl(ticket: int, new_sl: float) -> bool:
         return False
     if result.retcode == mt5.TRADE_RETCODE_DONE:
         logger.info("[MT5] SL modified | Ticket:%d -> %.2f", ticket, new_sl)
+        get_trade_logger().info("SL_MOD | ticket=%d | new_sl=%.5f", ticket, new_sl)
         return True
     if result.retcode == 10025:
         logger.debug("[MT5] SL modify: no changes needed | ticket:%d", ticket)
@@ -350,6 +351,7 @@ def close_partial(ticket: int, lot_size: float) -> bool:
     result = mt5.order_send(request)
     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
         logger.info(f"[MT5] Partial close | Ticket:{ticket} {lot_size}L")
+        get_trade_logger().info("PARTIAL | ticket=%d | lots=%.2f", ticket, lot_size)
         return True
     logger.warning(f"[MT5] Partial close failed | {ticket} | {mt5.last_error()}")
     return False
@@ -400,6 +402,7 @@ def place_raw_market_order(
                 f"[MT5] Raw order OK | {symbol} {action} {lot_size}L "
                 f"Ticket:{result.order} @ {result.price}"
             )
+            get_trade_logger().info("FILL | %s | %s | ticket=%s lots=%.2f price=%.5f", symbol, action, result.order, lot_size, result.price)
             return result.order
         time.sleep(0.3 * attempt)
     logger.warning(f"[MT5] Raw market order failed: {symbol} {action} {lot_size}L")
