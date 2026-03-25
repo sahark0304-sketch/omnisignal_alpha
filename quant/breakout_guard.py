@@ -190,7 +190,12 @@ class BreakoutGuard:
 
             if _breakout_direction != direction or now > _breakout_until:
                 _breakout_direction = direction
-                _breakout_until = now + BREAKOUT_BLOCK_SECS
+                try:
+                    from quant.trade_orchestrator import get_scaled_cooldown
+                    _scaled_block = get_scaled_cooldown(BREAKOUT_BLOCK_SECS, "breakout")
+                except ImportError:
+                    _scaled_block = BREAKOUT_BLOCK_SECS
+                _breakout_until = now + _scaled_block
                 logger.warning(
                     f"[BreakoutGuard] BREAKOUT DETECTED: {direction} "
                     f"| {displacement_pips:+.1f}p in {BREAKOUT_WINDOW_SECS}s "
@@ -265,12 +270,17 @@ def is_direction_blocked(
     now = time.time()
     elapsed = now - _sl_events[key]
 
-    if elapsed > DIRECTION_COOLOFF_SECS:
+    try:
+        from quant.trade_orchestrator import get_scaled_cooldown
+        _eff_cooloff = get_scaled_cooldown(DIRECTION_COOLOFF_SECS, "direction")
+    except ImportError:
+        _eff_cooloff = DIRECTION_COOLOFF_SECS
+    if elapsed > _eff_cooloff:
         _sl_events.pop(key, None)
         _sl_entry_prices.pop(key, None)
         return False, ""
 
-    remaining = int(DIRECTION_COOLOFF_SECS - elapsed)
+    remaining = int(_eff_cooloff - elapsed)
 
     if _has_structure_break(signal_action, signal_symbol):
         logger.info(

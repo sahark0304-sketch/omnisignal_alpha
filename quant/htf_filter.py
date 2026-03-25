@@ -363,8 +363,13 @@ def check_execution_dedup(
 
     if key in _last_executions:
         elapsed = now - _last_executions[key]
-        if elapsed < MIN_GAP_SECS:
-            remaining = int(MIN_GAP_SECS - elapsed)
+        try:
+            from quant.trade_orchestrator import get_scaled_cooldown
+            _eff_gap = get_scaled_cooldown(MIN_GAP_SECS, "dedup")
+        except ImportError:
+            _eff_gap = MIN_GAP_SECS
+        if elapsed < _eff_gap:
+            remaining = int(_eff_gap - elapsed)
             return False, (
                 f"Execution dedup: {symbol} {action} already opened "
                 f"{elapsed:.0f}s ago ({remaining}s cooloff remaining)"

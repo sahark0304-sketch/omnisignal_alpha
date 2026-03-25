@@ -44,6 +44,16 @@ from utils.notifier import notify
 
 logger = get_logger(__name__)
 
+# v5.0: Adaptive Trade Orchestrator
+try:
+    from quant.trade_orchestrator import (
+        trade_orchestrator, get_scaled_cooldown,
+        get_lot_size_multiplier, get_tp_expansion,
+    )
+    _ato_available = True
+except ImportError:
+    _ato_available = False
+
 _equity_history: deque = deque(maxlen=300)  # (timestamp, equity) tuples
 # In-memory halt mirror (canonical value always in DB)
 TRADING_HALTED: bool = False
@@ -120,6 +130,28 @@ def sync_halt_from_db():
         logger.warning(f"[RiskGuard] Startup: halt active from DB — {reason}")
 
 
+
+
+def get_trading_mode() -> str:
+    """Returns current trading mode: NORMAL, REDUCED, BLOCKED, or HALTED."""
+    halted, _ = is_halted()
+    if halted:
+        return "HALTED"
+    try:
+        opening = db_manager.get_opening_equity()
+        if opening and opening > 0:
+            from mt5_executor import mt5_executor
+            equity = mt5_executor.get_account_equity()
+            dd_pct = ((opening - equity) / opening) * 100.0
+            dd_frac = dd_pct / config.DAILY_DRAWDOWN_LIMIT_PCT if config.DAILY_DRAWDOWN_LIMIT_PCT > 0 else 0
+            if dd_frac >= config.DD_BLOCK_THRESHOLD_PCT:
+                return "BLOCKED"
+            if dd_frac >= config.DD_REDUCED_MODE_THRESHOLD_PCT:
+                return "REDUCED"
+    except Exception:
+        pass
+    return "NORMAL"
+
 # ── MAIN VALIDATION ───────────────────────────────────────────────────────────
 
 async def validate(
@@ -145,6 +177,17 @@ async def validate(
         if trace:
             trace.set_risk(False, reason)
             trace.set_execution("REJECTED")
+
+        # v5.0: Feed ATO rejection analytics
+        if _ato_available:
+            try:
+                trade_orchestrator.record_rejection(
+                    stage=stage, source=signal.raw_source,
+                    symbol=signal.symbol, action=signal.action,
+                    confidence=signal.confidence,
+                )
+            except Exception:
+                pass
         return False, reason, None
 
     # ── 0. Global halt ────────────────────────────────────────────────────────
@@ -718,6 +761,13 @@ async def validate(
     # v4.3.2: Hard lot ceiling — prevents any single trade from being so large
     # that one loss wipes the day's profits (learned from $413 blowback after $324 win)
     from quant.convexity_engine import HARD_LOT_CEILING
+
+    # v5.0: ATO regime-adaptive lot sizing
+    if _ato_available:
+        _ato_lot_mult = get_lot_size_multiplier()
+        if _ato_lot_mult != 1.0:
+            lot_size = round(lot_size * _ato_lot_mult, 2)
+
     if lot_size > HARD_LOT_CEILING:
         logger.info(
             "[RiskGuard] LOT CEILING: %.2f -> %.2f (hard cap)",

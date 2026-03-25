@@ -462,8 +462,8 @@ class MacroFilter:
             ), details
         elif bias == "PREFER_SHORT" and action == "BUY":
             # Soft advisory — log warning but don't block unless in REDUCED mode
-            from risk_guard.risk_guard import is_halted
-            if is_halted()[0]:
+            from risk_guard.risk_guard import get_trading_mode
+            if get_trading_mode() == "REDUCED":
                 return False, (
                     f"COT ADVISORY (enforced in REDUCED mode): "
                     f"Commercial net short ({state.cot.commercial_net:+,}) suggests bearish backdrop. "
@@ -472,8 +472,8 @@ class MacroFilter:
             logger.info(f"[Macro] COT weak bear signal — BUY allowed but score reduced")
 
         elif bias == "PREFER_LONG" and action == "SELL":
-            from risk_guard.risk_guard import is_halted
-            if is_halted()[0]:
+            from risk_guard.risk_guard import get_trading_mode
+            if get_trading_mode() == "REDUCED":
                 return False, (
                     f"COT ADVISORY (enforced in REDUCED mode): "
                     f"Commercial net long ({state.cot.commercial_net:+,}) suggests bullish backdrop. "

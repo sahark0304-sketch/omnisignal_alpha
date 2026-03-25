@@ -344,11 +344,11 @@ async def _tick():
                             add_lots = max(round(original_lot * config.PYRAMID_ADD_PCT, 2), 0.01)
                             new_sl = entry + (5 * pip_size) if action == "BUY" else entry - (5 * pip_size)
                             new_sl = round(new_sl, 5)
-                            add_result = mt5_executor.place_raw_market_order(
+                            add_ticket = mt5_executor.place_raw_market_order(
                                 symbol=symbol, action=action, lot_size=add_lots,
                                 sl=new_sl, comment="OmniV2|Pyramid",
                             )
-                            if add_result and isinstance(add_result, int) and add_result > 0:
+                            if add_ticket and add_ticket > 0:
                                 mt5_executor.modify_sl(ticket, new_sl)
                                 _pyramided.add(ticket)
                                 _tp1_hit.add(ticket)
@@ -356,12 +356,12 @@ async def _tick():
                                 pyramid_done = True
                                 logger.info(
                                     "[TM] PYRAMID_ADD: parent=%d child=%d +%.2fL SL→%.5f",
-                                    ticket, add_result, add_lots, new_sl,
+                                    ticket, add_ticket, add_lots, new_sl,
                                 )
                                 _trade_log.info("PYRAMID | %s | %s | parent=%d add_lots=%.2f",
                                     symbol, action, ticket, add_lots)
                                 db_manager.log_audit("PYRAMID_ADD", {
-                                    "parent": ticket, "child": add_result,
+                                    "parent": ticket, "child": add_ticket,
                                     "add_lots": add_lots, "new_sl": new_sl,
                                 })
                                 notify(f"🔺 *Pyramid* | {symbol} {action} +{add_lots}L | SL→`{new_sl}`")
@@ -467,6 +467,13 @@ async def _handle_position_closed(ticket: int):
             action = "BUY" if close_deal.type == 1 else "SELL"
 
         db_manager.close_trade(ticket, close_price, pnl)
+
+        # v5.0: Record close in ATO
+        try:
+            from quant.trade_orchestrator import trade_orchestrator as _ato
+            _ato.record_close(ticket=ticket, pnl=pnl, source="")
+        except Exception:
+            pass
         logger.info("[TM] Closed ticket:%d @ %.5f PnL:$%.2f", ticket, close_price, pnl)
         get_trade_logger().info("CLOSE | ticket=%d | pnl=%.2f close_price=%.5f", ticket, pnl, close_price)
 

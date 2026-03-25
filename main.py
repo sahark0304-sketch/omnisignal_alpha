@@ -63,6 +63,13 @@ from quant.macro_filter import macro_filter
 from recovery.state_recovery import reconcile_on_startup, run_heartbeat
 import config
 
+# v5.0: Adaptive Trade Orchestrator
+try:
+    from quant.trade_orchestrator import trade_orchestrator, run_orchestrator_monitor
+    _ato_available = True
+except ImportError:
+    _ato_available = False
+
 logger = get_logger("main")
 
 
@@ -367,6 +374,15 @@ async def process_signal(raw: RawSignal):
         db_manager.update_signal_status(signal_id, "REJECTED", reason)
         trace.set_execution("REJECTED")
         trace.save()
+
+        # v5.0: Record rejection in ATO
+        if _ato_available:
+            _stage = reason.split(":")[0][:30] if ":" in reason else reason[:30]
+            trade_orchestrator.record_rejection(
+                stage=_stage, source=raw.source,
+                symbol=signal.symbol, action=signal.action,
+                confidence=signal.confidence,
+            )
         return
 
     # ── Signal Amplifier boost (multi-source confluence) ──────────────
@@ -470,6 +486,13 @@ async def process_signal(raw: RawSignal):
             f"\n"
             f"Source: `{signal.raw_source}` | Tier: `{order.alpha_tier}`{tox_tag}"
         )
+
+        # v5.0: Record execution in ATO
+        if _ato_available:
+            trade_orchestrator.record_execution(
+                source=raw.source, symbol=signal.symbol,
+                action=signal.action, lot_size=order.lot_size, ticket=ticket,
+            )
     else:
         db_manager.update_signal_status(signal_id, "REJECTED", "MT5 order_send failed")
         trace.set_execution("REJECTED")
@@ -676,6 +699,9 @@ async def startup():
             _supervise("dollar_bars", dollar_engine.run), name="dollar_bars"
         ))
 
+
+    if _ato_available and getattr(config, "ATO_ENABLED", True):
+        tasks.append(asyncio.create_task(run_orchestrator_monitor(), name="ato_monitor"))
     logger.info(f"[Main] {len(tasks)} tasks launched. System is live.")
     await asyncio.gather(*tasks)
 
