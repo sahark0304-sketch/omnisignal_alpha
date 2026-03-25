@@ -58,6 +58,9 @@ _FEATURE_NAMES: List[str] = [
     "minutes_into_session",
     "session_atr_rank",
     "is_session_open_30min",
+    # Group 6: Trade Recency & Account State
+    "time_since_last_trade_mins",
+    "current_dd_pct",
 ]
 
 
@@ -96,6 +99,35 @@ def compute_features(symbol: str, action: str, entry_price: float) -> Dict[str, 
             for key, val in group.items():
                 if key in features:
                     features[key] = float(val) if np.isfinite(val) else 0.0
+
+        # Group 6: Trade recency & account state
+        try:
+            from database import db_manager
+            last_close = db_manager.get_last_trade_close_time(symbol)
+            if last_close is not None:
+                from datetime import datetime as _dt
+                if isinstance(last_close, str):
+                    last_close = _dt.fromisoformat(last_close)
+                _mins = (_dt.now() - last_close).total_seconds() / 60.0
+                features["time_since_last_trade_mins"] = min(_mins, 1440.0)
+            else:
+                features["time_since_last_trade_mins"] = 999.0
+        except Exception:
+            features["time_since_last_trade_mins"] = 999.0
+
+        try:
+            from database import db_manager as _db
+            _opening = _db.get_opening_equity()
+            if _opening and _opening > 0 and _mt5_available:
+                _acct = mt5.account_info()
+                if _acct and _acct.equity > 0:
+                    features["current_dd_pct"] = max(0.0, (_opening - _acct.equity) / _opening * 100.0)
+                else:
+                    features["current_dd_pct"] = 0.0
+            else:
+                features["current_dd_pct"] = 0.0
+        except Exception:
+            features["current_dd_pct"] = 0.0
     except Exception as exc:
         logger.error(f"[FeatureEng] Top-level failure: {exc}", exc_info=True)
 

@@ -51,6 +51,8 @@ FEATURE_NAMES = [
     "ai_confidence",
     "source_win_rate",
     "spread_pips",
+    "time_since_last_trade_mins",
+    "current_dd_pct",
 ]
 
 SESSION_MAP = {"LONDON": 0, "NY": 1, "OVERLAP": 2, "ASIA": 3}
@@ -716,6 +718,8 @@ class WinProbabilityModel:
             float(row.get("ai_confidence") or 7.0),
             source_wr,
             float(row.get("spread_pips") or 0.0),
+            float(row.get("time_since_last_trade_mins") or 999.0),
+            float(row.get("current_dd_pct") or 0.0),
         ], dtype=np.float64)
 
     def _extract_legacy_features(self, row: Dict) -> Optional[np.ndarray]:
@@ -756,6 +760,8 @@ class WinProbabilityModel:
             ai_conf,                                   # ai_confidence
             source_wr,                                 # source_win_rate
             spread,                                    # spread_pips
+            999.0,                                     # time_since_last_trade_mins default
+            0.0,                                       # current_dd_pct default
         ], dtype=np.float64)
 
     def _engineer_single(self, features: Dict) -> Optional[np.ndarray]:
@@ -907,6 +913,17 @@ class WinProbabilityModel:
             saved_state = data.get("state")
             self._last_train_count = data.get("last_train_count", 0)
             loaded_names = data.get("feature_names")
+            if loaded_names and len(loaded_names) != len(FEATURE_NAMES):
+                logger.warning(
+                    "[ML-Brain] Feature count mismatch (%d saved vs %d current). "
+                    "Invalidating cached model for retrain.",
+                    len(loaded_names), len(FEATURE_NAMES),
+                )
+                self._model = None
+                self._scaler = None
+                self._active_feature_names = list(FEATURE_NAMES)
+                self._state.status = "OBSERVATION"
+                return
             if loaded_names:
                 self._active_feature_names = loaded_names
             loaded_params = data.get("best_params")

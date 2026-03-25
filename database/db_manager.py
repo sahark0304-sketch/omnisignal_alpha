@@ -1,4 +1,4 @@
-﻿"""
+"""
 database/db_manager.py — OmniSignal Alpha v2.0
 Extended schema supporting all 14 pillars.
 
@@ -475,6 +475,20 @@ def get_source_win_rate(source: str) -> Dict:
         return {"total": 0, "wins": 0}
     except Exception:
         return {"total": 0, "wins": 0}
+
+
+def get_last_trade_close_time(symbol: str):
+    """Return the close_time of the most recent closed trade on this symbol."""
+    try:
+        with get_connection() as conn:
+            r = conn.execute(
+                "SELECT close_time FROM trades WHERE symbol=? AND status='CLOSED' "
+                "ORDER BY close_time DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+        return r[0] if r else None
+    except Exception:
+        return None
 
 
 def insert_forensic(data: Dict):
