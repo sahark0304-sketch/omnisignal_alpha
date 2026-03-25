@@ -505,6 +505,37 @@ async def validate(
         else:
             return _reject(tox_reason, "TOXICITY")
 
+    # v4.4-audit: Session Risk Budget Enforcement
+    try:
+        from datetime import datetime, timezone
+        _utc_now = datetime.now(timezone.utc)
+        _utc_h = _utc_now.hour
+        _current_session = None
+        for _sess_name, (_s_start, _s_end) in config.SESSION_HOURS_UTC.items():
+            if _s_start < _s_end:
+                if _s_start <= _utc_h < _s_end:
+                    _current_session = _sess_name
+                    break
+            else:
+                if _utc_h >= _s_start or _utc_h < _s_end:
+                    _current_session = _sess_name
+                    break
+        if _current_session:
+            _sess_budget_pct = config.SESSION_RISK_BUDGET_PCT.get(_current_session, 1.0)
+            _sess_dd_limit = config.DAILY_DRAWDOWN_LIMIT_PCT * _sess_budget_pct
+            _opening = db_manager.get_opening_equity()
+            if _opening and _opening > 0:
+                _sess_dd = (((_opening - account_equity) / _opening) * 100.0)
+                if _sess_dd > 0 and _sess_dd >= _sess_dd_limit:
+                    return _reject(
+                        f"SESSION BUDGET EXHAUSTED: {_current_session} "
+                        f"DD={_sess_dd:.1f}% >= session limit {_sess_dd_limit:.1f}% "
+                        f"(budget={_sess_budget_pct:.0%} of daily {config.DAILY_DRAWDOWN_LIMIT_PCT}%)",
+                        "SESSION_BUDGET",
+                    )
+    except Exception:
+        pass
+
     # ── 5e. Execution Dedup (prevent duplicate trades < 120s apart) ───────
     dup_ok, dup_reason = check_execution_dedup(signal.symbol, signal.action)
     if not dup_ok:

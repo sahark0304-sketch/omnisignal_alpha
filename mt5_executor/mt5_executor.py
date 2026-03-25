@@ -1,4 +1,4 @@
-﻿"""
+"""
 mt5_executor/mt5_executor.py — OmniSignal Alpha v2.0
 Pillar 8: Institutional-Grade Execution Engine
 
@@ -353,6 +353,14 @@ def close_partial(ticket: int, lot_size: float) -> bool:
         return True
     logger.warning(f"[MT5] Partial close failed | {ticket} | {mt5.last_error()}")
     return False
+
+
+def close_position(ticket: int) -> bool:
+    """Close an entire position by ticket (used e.g. time-based stale exit)."""
+    pos = _get_position(ticket)
+    if not pos:
+        return False
+    return close_partial(ticket, float(pos.volume))
 
 
 def place_raw_market_order(

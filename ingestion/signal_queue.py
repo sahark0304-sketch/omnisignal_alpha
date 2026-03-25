@@ -1,8 +1,12 @@
 """
-ingestion/signal_queue.py — Thread-safe async queue for raw signals.
+ingestion/signal_queue.py - Priority-aware async queue for raw signals.
 
 All ingestors (Telegram, Discord, manual) push RawSignal objects here.
 The main orchestrator pulls and processes them sequentially.
+
+Priority tiers:
+  1 (highest) - AUTO_CONVERGENCE, S-Tier VIP Telegram signals
+  2 (normal)  - Standard AUTO_ scanners, unrated Telegram signals
 """
 
 import asyncio
@@ -14,35 +18,48 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ─────────────────────────────────────────────
-#  DATA STRUCTURE
-# ─────────────────────────────────────────────
 
 @dataclass
 class RawSignal:
-    content: str                              # Raw text of the signal message
-    source: str                               # e.g. "telegram:channel_name", "discord:server"
+    content: str
+    source: str
     received_at: datetime = field(default_factory=datetime.now)
-    image_bytes: Optional[bytes] = None       # Attached chart screenshot, if any
+    image_bytes: Optional[bytes] = None
 
 
-# ─────────────────────────────────────────────
-#  ASYNC QUEUE
-# ─────────────────────────────────────────────
+_PRIORITY_1_SOURCES = {"AUTO_CONVERGENCE"}
 
-_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-_current_task_done: bool = True
+_counter = 0
+
+
+def _assign_priority(source: str) -> int:
+    """Assign queue priority: 1 = highest, 2 = normal."""
+    if source in _PRIORITY_1_SOURCES:
+        return 1
+    if not source.startswith("AUTO_"):
+        return 1
+    return 2
+
+
+_queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=500)
 
 
 async def push(signal: RawSignal):
-    """Add a raw signal to the processing queue."""
-    await _queue.put(signal)
-    logger.info(f"[Queue] Signal queued from {signal.source} | Queue size: {_queue.qsize()}")
+    """Add a raw signal to the priority processing queue."""
+    global _counter
+    _counter += 1
+    priority = _assign_priority(signal.source)
+    await _queue.put((priority, _counter, signal))
+    logger.info(
+        "[Queue] Signal queued from %s | P%d | Queue size: %d",
+        signal.source, priority, _queue.qsize(),
+    )
 
 
 async def pull() -> RawSignal:
-    """Block until a signal is available, then return it."""
-    return await _queue.get()
+    """Block until a signal is available, then return highest priority."""
+    _, _, signal = await _queue.get()
+    return signal
 
 
 def done():

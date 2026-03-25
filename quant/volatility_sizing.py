@@ -13,7 +13,6 @@ Sizing priority:
 from dataclasses import dataclass
 from typing import Optional, Dict
 import config
-from database import db_manager
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -106,19 +105,6 @@ def calculate_lot_size(
         lot = max(lot, 0.03)
     else:
         lot = max(lot, 0.01)
-
-
-    # v4.0: Winning streak multiplier
-    try:
-        recent = db_manager.get_recent_trades(limit=5)
-        if recent and len(recent) >= 3:
-            last_3 = [t for t in recent[:3] if t.get("pnl") is not None]
-            if len(last_3) >= 3 and all(t["pnl"] > 0 for t in last_3):
-                streak_boost = 1.25
-                lot = round(lot * streak_boost, 2)
-                logger.info("[Sizing] 3-win streak: lot boosted 25%% to %.2f", lot)
-    except Exception:
-        pass
 
     actual_risk     = lot * sl_pips * pip_value_per_lot
     actual_risk_pct = (actual_risk / equity) * 100.0
