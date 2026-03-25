@@ -387,6 +387,7 @@ MAX_CURRENCY_EXPOSURE_PCT: float  = 5.0
 MAX_CONCURRENT_TRADES: int        = 10
 VIP_OVERFLOW_SLOTS: int           = 2
 MAX_CONCURRENT_PER_SYMBOL: int    = 1
+MAX_TOTAL_LOTS: float             = 0.50
 
 
 # ─────────────────────────────────────────────────────────────────────────────

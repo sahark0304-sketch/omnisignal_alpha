@@ -51,9 +51,38 @@ async def run_management_loop():
         await asyncio.sleep(5)
 
 
-async def _tick():
+async def _tick():  # test
     positions    = mt5_executor.get_all_positions()
     live_tickets = {p["ticket"] for p in positions}
+
+    # v4.4-audit: Friday Weekend Flattening (gap risk protection)
+    try:
+        from datetime import datetime, timezone
+        _now_utc = datetime.now(timezone.utc)
+        if _now_utc.weekday() == 4 and _now_utc.hour >= 20:
+            if positions:
+                for _fp in positions:
+                    _ft = _fp["ticket"]
+                    _fpnl = _fp.get("profit", 0)
+                    _fentry = _fp["price_open"]
+                    _fcur = _fp["price_current"]
+                    _fpip = mt5_executor.get_pip_size(_fp["symbol"])
+                    _fpips = abs(_fcur - _fentry) / _fpip
+                    if _fpnl > 0 and _fpips > 10:
+                        be_sl = _fentry + (2 * _fpip) if _fp["type"] == "BUY" else _fentry - (2 * _fpip)
+                        mt5_executor.modify_sl(_ft, round(be_sl, 5))
+                        logger.info("[TM] FRIDAY_FLATTEN: ticket=%s tightened SL to BE (profit +%.0fp)", _ft, _fpips)
+                    else:
+                        ok = mt5_executor.close_position(_ft)
+                        if ok:
+                            logger.info("[TM] FRIDAY_FLATTEN: closed ticket=%s at market (pnl=$%.2f)", _ft, _fpnl)
+                    db_manager.log_audit("FRIDAY_FLATTEN", {
+                        "ticket": _ft, "action": "BE_TIGHTEN" if (_fpnl > 0 and _fpips > 10) else "CLOSE",
+                        "pnl": _fpnl, "pips": round(_fpips, 1),
+                    })
+                return
+    except Exception as e:
+        logger.debug("[TM] Friday flatten check error: %s", e)
 
     # Detect positions that closed since last tick
     for ticket in list(_original_lots.keys()):
@@ -142,52 +171,11 @@ async def _tick():
                         db_manager.log_audit("TP2_HIT", {"ticket": ticket, "lots": close_lots})
                         notify(f"🎯🎯 *TP2!* | {symbol} {action} Ticket:`{ticket}` @ `{current}`")
 
-        # -- v4.4-audit: TIME-BASED STALE EXIT --
-        if db_trade.get("open_time"):
-            try:
-                from datetime import datetime as _dt
-                _ot = db_trade["open_time"]
-                if isinstance(_ot, str):
-                    _ot = _dt.fromisoformat(_ot)
-                _age_secs = (_dt.now() - _ot).total_seconds()
-                if _age_secs >= 1800:
-                    _pip_sz = mt5_executor.get_pip_size(symbol)
-                    _pips_from_entry = abs(current - entry) / _pip_sz
-                    if _pips_from_entry < 5.0:
-                        ok = mt5_executor.close_position(ticket)
-                        if ok:
-                            db_manager.log_audit("TIME_BASED_STALE_EXIT", {
-                                "ticket": ticket, "age_mins": round(_age_secs / 60, 1),
-                                "pips_from_entry": round(_pips_from_entry, 1),
-                            })
-                            logger.info(
-                                "[TM] STALE EXIT: ticket=%s age=%.0fm pips_from_entry=%.1f",
-                                ticket, _age_secs / 60, _pips_from_entry,
-                            )
-                            continue
-            except Exception:
-                pass
-
         # ── TRAILING STOP ───────────────────────────────────────────────────
         if ticket in _tp1_hit and ticket in _trailing:
             pip_size         = mt5_executor.get_pip_size(symbol)
             trail_step       = config.TRAILING_STOP_STEP_PIPS * pip_size
-            # v4.4-audit: ATR-adaptive trailing activation
-            try:
-                import MetaTrader5 as mt5
-                import numpy as np
-                _m5_rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 15)
-                if _m5_rates is not None and len(_m5_rates) >= 14:
-                    _h = _m5_rates['high'].astype(float)
-                    _l = _m5_rates['low'].astype(float)
-                    _c = _m5_rates['close'].astype(float)
-                    _tr = np.maximum(_h[1:] - _l[1:], np.maximum(np.abs(_h[1:] - _c[:-1]), np.abs(_l[1:] - _c[:-1])))
-                    _m5_atr = float(np.mean(_tr[-14:]))
-                    trail_activation = 1.5 * _m5_atr
-                else:
-                    trail_activation = config.TRAILING_STOP_ACTIVATION_PIPS * pip_size
-            except Exception:
-                trail_activation = config.TRAILING_STOP_ACTIVATION_PIPS * pip_size
+            trail_activation = config.TRAILING_STOP_ACTIVATION_PIPS * pip_size
 
             if action == "BUY":
                 ideal_sl = current - trail_activation

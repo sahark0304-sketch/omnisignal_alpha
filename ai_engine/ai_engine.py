@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 from google import genai
 from google.genai import types
+import re
 import config
 from utils.logger import get_logger
 
@@ -77,6 +78,69 @@ Message:
 ---
 """
 
+
+def _regex_fallback_parse(text: str, source: str) -> Optional[ParsedSignal]:
+    """Degraded-mode parser: extract basic signal structure via regex when AI is down."""
+    upper = text.upper()
+
+    action_match = re.search(r'\b(BUY|SELL)\b', upper)
+    if not action_match:
+        return None
+    action = action_match.group(1)
+
+    sym_aliases = {
+        "GOLD": "XAUUSD", "XAU": "XAUUSD", "CABLE": "GBPUSD",
+        "FIBER": "EURUSD", "AUSSIE": "AUDUSD",
+    }
+    symbol = None
+    sym_match = re.search(
+        r'\b(XAUUSD|EURUSD|GBPUSD|USDJPY|AUDUSD|NZDUSD|USDCAD|USDCHF|'
+        r'GBPJPY|EURJPY|XAGUSD|NAS100|US30|BTCUSDT|ETHUSDT|GOLD|XAU|CABLE|FIBER|AUSSIE)\b',
+        upper,
+    )
+    if sym_match:
+        raw_sym = sym_match.group(1)
+        symbol = sym_aliases.get(raw_sym, raw_sym)
+
+    if not symbol:
+        return None
+
+    def _extract_price(label: str) -> Optional[float]:
+        pattern = rf'{label}\s*[:\-=]?\s*(\d+\.?\d*)'
+        m = re.search(pattern, upper)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+        return None
+
+    entry = _extract_price("ENTRY") or _extract_price("@") or _extract_price("PRICE")
+    sl = _extract_price("SL") or _extract_price("STOP")
+    tp1 = _extract_price("TP1") or _extract_price("TP")
+    tp2 = _extract_price("TP2")
+    tp3 = _extract_price("TP3")
+
+    if not sl:
+        return None
+
+    conf = 5
+    if sl and tp1:
+        conf = 6
+    if sl and tp1 and entry:
+        conf = 7
+
+    signal = ParsedSignal(
+        symbol=symbol, action=action, entry_price=entry,
+        stop_loss=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+        confidence=conf, is_valid=True,
+        raw_source=source,
+        ai_reasoning="REGEX_FALLBACK: Gemini unavailable, parsed via pattern matching",
+    )
+    logger.warning("[AI] REGEX FALLBACK: %s %s SL=%s TP1=%s (AI down)", symbol, action, sl, tp1)
+    return signal
+
+
 async def classify_message(text: str) -> str:
     """Fast gate — returns SIGNAL/CANCEL/UPDATE/CLOSE/NOISE before spending a full parse."""
     try:
@@ -92,6 +156,8 @@ async def classify_message(text: str) -> str:
         word = response.text.strip().upper().split()[0]
         return word if word in ("SIGNAL", "CANCEL", "UPDATE", "CLOSE", "NOISE") else "NOISE"
     except Exception:
+        if _regex_fallback_parse(text, "gate_check"):
+            return "SIGNAL"
         return "NOISE"
 
 
@@ -223,6 +289,9 @@ async def parse_text_signal(text: str, source: str) -> Optional[ParsedSignal]:
             return None
 
     if data is None:
+        fallback = _regex_fallback_parse(text, source)
+        if fallback:
+            return fallback
         return None
 
     sym = str(data.get("symbol", "")).upper().replace("/", "").replace("-", "").strip()

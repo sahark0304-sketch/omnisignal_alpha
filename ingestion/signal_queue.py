@@ -25,6 +25,7 @@ class RawSignal:
     source: str
     received_at: datetime = field(default_factory=datetime.now)
     image_bytes: Optional[bytes] = None
+    retry_count: int = 0
 
 
 _PRIORITY_1_SOURCES = {"AUTO_CONVERGENCE"}

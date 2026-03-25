@@ -75,6 +75,15 @@ def check_exposure(
         if sym_count >= config.MAX_CONCURRENT_PER_SYMBOL:
             return False, f"Max {config.MAX_CONCURRENT_PER_SYMBOL} concurrent positions on {new_symbol}"
 
+        # ── Layer 2b: Aggregate notional cap ─────────────────────────────────
+        _max_total = getattr(config, "MAX_TOTAL_LOTS", 0.50)
+        _total_open_lots = sum(float(p["volume"]) for p in live_positions)
+        if _total_open_lots >= _max_total:
+            return False, (
+                f"MAX_NOTIONAL_EXPOSURE: total open {_total_open_lots:.2f}L "
+                f">= cap {_max_total:.2f}L"
+            )
+
         # ── Layer 3: Currency exposure cap ────────────────────────────────────
         new_currencies = _extract_currencies(new_symbol)
         max_currency_risk = account_equity * (config.MAX_CURRENCY_EXPOSURE_PCT / 100.0)
