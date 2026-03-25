@@ -247,7 +247,7 @@ async def validate(
                 alpha_multiplier=alpha_mult,
             )
             if trace:
-                trace.set_risk_check("FAST_TRACK_APPROVED")
+                trace.set_risk(True, "FAST_TRACK_APPROVED")
             db_manager.log_audit("FAST_TRACK", {
                 "source": signal.raw_source,
                 "tier": alpha_tier,

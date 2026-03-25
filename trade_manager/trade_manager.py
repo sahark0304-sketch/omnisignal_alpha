@@ -348,7 +348,7 @@ async def _tick():
                                 symbol=symbol, action=action, lot_size=add_lots,
                                 sl=new_sl, comment="OmniV2|Pyramid",
                             )
-                            if add_result and hasattr(add_result, "order") and add_result.order > 0:
+                            if add_result and isinstance(add_result, int) and add_result > 0:
                                 mt5_executor.modify_sl(ticket, new_sl)
                                 _pyramided.add(ticket)
                                 _tp1_hit.add(ticket)
@@ -356,12 +356,12 @@ async def _tick():
                                 pyramid_done = True
                                 logger.info(
                                     "[TM] PYRAMID_ADD: parent=%d child=%d +%.2fL SL→%.5f",
-                                    ticket, add_result.order, add_lots, new_sl,
+                                    ticket, add_result, add_lots, new_sl,
                                 )
                                 _trade_log.info("PYRAMID | %s | %s | parent=%d add_lots=%.2f",
                                     symbol, action, ticket, add_lots)
                                 db_manager.log_audit("PYRAMID_ADD", {
-                                    "parent": ticket, "child": add_result.order,
+                                    "parent": ticket, "child": add_result,
                                     "add_lots": add_lots, "new_sl": new_sl,
                                 })
                                 notify(f"🔺 *Pyramid* | {symbol} {action} +{add_lots}L | SL→`{new_sl}`")

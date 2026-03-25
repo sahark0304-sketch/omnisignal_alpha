@@ -8,7 +8,7 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 import argparse
-from quant.macro_filter import macro_filter, MacroState, COTData, GammaData
+from quant.macro_filter import macro_filter, MacroState, COTState, GammaState
 
 def main():
     print("==================================================")
@@ -28,13 +28,13 @@ def main():
     strikes_above_input = input("Strikes ABOVE (format: price:gex,price:gex) (Leave blank if none): ")
     strikes_below_input = input("Strikes BELOW (format: price:gex,price:gex) (Leave blank if none): ")
 
-    cot = COTData(
+    cot = COTState(
         commercial_net=int(cot_net),
         large_speculator_net=0,
         update_date=macro_filter.state.cot.update_date
     )
 
-    gamma = GammaData(
+    gamma = GammaState(
         gamma_neutral_price=float(gnp) if gnp else 0.0,
         max_pain=float(max_pain) if max_pain else 0.0,
         net_gex_millions=float(gex) if gex else 0.0,
@@ -72,8 +72,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.cot_net is not None:
-        cot = COTData(commercial_net=args.cot_net, large_speculator_net=args.cot_spec or 0)
-        gamma = GammaData(
+        cot = COTState(commercial_net=args.cot_net, large_speculator_net=args.cot_spec or 0)
+        gamma = GammaState(
             gamma_neutral_price=args.gnp or 0.0,
             max_pain=args.max_pain or 0.0,
             net_gex_millions=args.gex or 0.0,
