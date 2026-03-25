@@ -174,11 +174,6 @@ def init_db():
             lot_size            REAL
         );
         CREATE INDEX IF NOT EXISTS idx_forensics_ticket ON trade_forensics(ticket);
-        # Migrate: add xgb_shadow_prob column if missing
-        try:
-            conn.execute("ALTER TABLE trade_forensics ADD COLUMN xgb_shadow_prob REAL")
-        except Exception:
-            pass  # Column already exists
 
         CREATE TABLE IF NOT EXISTS dollar_bars (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -250,6 +245,12 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_mf_symbol_tf_ts ON market_features(symbol, timeframe, ts DESC);
         """)
+
+    # Migrate: add xgb_shadow_prob column if missing
+    try:
+        conn.execute("ALTER TABLE trade_forensics ADD COLUMN xgb_shadow_prob REAL")
+    except Exception:
+        pass
     logger.info("[DB] v2.0 schema initialized.")
 
 
