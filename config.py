@@ -275,6 +275,18 @@ NEWS_BLOCK_BEFORE_MINS: int      = 15
 NEWS_BLOCK_AFTER_MINS: int       = 15
 NEWS_HIGH_IMPACT_ONLY: bool      = True
 
+# Gold-specific medium-impact news blocking (XAUUSD is uniquely sensitive)
+NEWS_GOLD_MEDIUM_IMPACT: bool = True
+NEWS_GOLD_SENSITIVE_EVENTS: List[str] = [
+    "FOMC", "Fed", "CPI", "PPI", "NFP", "Non-Farm",
+    "GDP", "PCE", "Retail Sales", "Unemployment",
+    "ISM", "PMI", "ADP", "Durable Goods",
+    "Consumer Confidence", "Jackson Hole",
+    "Powell", "Yellen", "Treasury",
+]
+NEWS_GOLD_MEDIUM_BLOCK_BEFORE_MINS: int = 10
+NEWS_GOLD_MEDIUM_BLOCK_AFTER_MINS: int = 10
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  VOLATILITY SIZING (Pillar 5)

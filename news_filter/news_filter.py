@@ -111,6 +111,50 @@ class NewsFilter:
                 logger.debug(f"[NewsFilter] Skipping malformed event: {e}")
                 continue
 
+        # Gold-specific medium-impact blocking
+        is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+        if is_gold and getattr(config, "NEWS_GOLD_MEDIUM_IMPACT", False):
+            gold_before = timedelta(minutes=config.NEWS_GOLD_MEDIUM_BLOCK_BEFORE_MINS)
+            gold_after = timedelta(minutes=config.NEWS_GOLD_MEDIUM_BLOCK_AFTER_MINS)
+            sensitive = [kw.lower() for kw in config.NEWS_GOLD_SENSITIVE_EVENTS]
+
+            for event in self._events:
+                try:
+                    impact = event.get("impact", "").lower()
+                    if impact != "medium":
+                        continue
+
+                    currency = event.get("country", "").upper()
+                    if currency != "USD":
+                        continue
+
+                    title_lower = event.get("title", "").lower()
+                    if not any(kw in title_lower for kw in sensitive):
+                        continue
+
+                    event_time = self._parse_ff_datetime(
+                        event.get("date", ""),
+                        event.get("time", "")
+                    )
+                    if event_time is None:
+                        continue
+
+                    window_start = event_time - gold_before
+                    window_end = event_time + gold_after
+
+                    if window_start <= now <= window_end:
+                        title = event.get("title", "Unknown Event")
+                        reason = (
+                            f"Gold medium-impact block: '{title}' ({currency}) "
+                            f"at {event_time.strftime('%H:%M')} - "
+                            f"\u00b1{config.NEWS_GOLD_MEDIUM_BLOCK_BEFORE_MINS}min window"
+                        )
+                        logger.info(f"[NewsFilter] GOLD MEDIUM BLOCKED: {reason}")
+                        return True, reason
+                except Exception as e:
+                    logger.debug(f"[NewsFilter] Skipping gold event check: {e}")
+                    continue
+
         return False, ""
 
     def _parse_ff_datetime(self, date_str: str, time_str: str) -> Optional[datetime]:
@@ -181,6 +225,50 @@ class NewsFilter:
             return None
         return min(upcoming, key=lambda e: e["_parsed_time"])
 
+
+    def get_upcoming_gold_events(self, hours: int = 24) -> List[Dict]:
+        """Returns upcoming gold-sensitive events for the dashboard."""
+        now = datetime.now()
+        cutoff = now + timedelta(hours=hours)
+        results = []
+
+        sensitive = [kw.lower() for kw in getattr(config, "NEWS_GOLD_SENSITIVE_EVENTS", [])]
+
+        for event in self._events:
+            try:
+                impact = event.get("impact", "").lower()
+                currency = event.get("country", "").upper()
+                if currency != "USD":
+                    continue
+
+                title = event.get("title", "")
+                title_lower = title.lower()
+
+                is_relevant = (
+                    impact == "high"
+                    or (impact == "medium" and any(kw in title_lower for kw in sensitive))
+                )
+                if not is_relevant:
+                    continue
+
+                event_time = self._parse_ff_datetime(
+                    event.get("date", ""),
+                    event.get("time", "")
+                )
+                if event_time is None or event_time < now or event_time > cutoff:
+                    continue
+
+                results.append({
+                    "time": event_time.strftime("%Y-%m-%d %H:%M"),
+                    "title": title,
+                    "impact": event.get("impact", ""),
+                    "currency": currency,
+                })
+            except Exception:
+                continue
+
+        results.sort(key=lambda x: x["time"])
+        return results
 
 # Module-level singleton
 news_filter = NewsFilter()
