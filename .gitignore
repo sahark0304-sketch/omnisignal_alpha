@@ -1,0 +1,42 @@
+﻿# Secrets & credentials
+.env
+*.session_str
+*.session
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data & databases
+data/
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Test artifacts
+test_write.txt
+test_write_tool.txt
+bot_output.log
+bot_error.log
+datetime
