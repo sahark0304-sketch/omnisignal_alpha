@@ -180,8 +180,8 @@ FUNDED_CONSERVATIVE_MULTIPLIER: float = 0.70
 #  Also prevents tilt-style overtrading after losses.
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_TRADES_PER_HOUR: int  = 15    # Never more than 6 new entries per rolling hour
-MAX_TRADES_PER_DAY: int   = 60   # Never more than 20 trades per trading day
+MAX_TRADES_PER_HOUR: int  = 6     # Max 6 new entries per rolling hour
+MAX_TRADES_PER_DAY: int   = 20    # Max 20 trades per trading day
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -409,7 +409,6 @@ MAX_TOTAL_LOTS: float             = 0.50
 BLACK_BOX_ENABLED: bool      = True
 BLACK_BOX_DB_PATH: str       = "data/black_box.db"
 DATA_DIR: str               = "data"
-DB_PATH: str       = "data/black_box.db"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

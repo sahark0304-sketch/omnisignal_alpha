@@ -20,6 +20,7 @@ from utils.logger import get_logger, get_trade_logger
 from utils.notifier import notify
 
 logger = get_logger(__name__)
+_trade_log = get_trade_logger()
 
 
 # ── CONNECTION ────────────────────────────────────────────────────────────────
@@ -239,6 +240,8 @@ def place_order(signal, lot_size: float, is_high_conviction: bool = False) -> Op
                     f"Lots: `{result.volume}` | SL: `{signal.stop_loss}` | TP1: `{signal.tp1}`\n"
                     f"Ticket: `{ticket}` | Slippage: `{slippage_pips:.1f}p`"
                 )
+            _trade_log.info("FILL | %s | %s | ticket=%s lots=%.2f @ %.5f slip=%.1fp",
+                signal.symbol, signal.action, ticket, result.volume, result.price, slippage_pips)
             return ticket
 
         # Retryable error codes

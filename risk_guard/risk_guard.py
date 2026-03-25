@@ -19,6 +19,8 @@ Validation sequence:
 """
 
 import asyncio
+import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Tuple
@@ -42,6 +44,7 @@ from utils.notifier import notify
 
 logger = get_logger(__name__)
 
+_equity_history: deque = deque(maxlen=300)  # (timestamp, equity) tuples
 # In-memory halt mirror (canonical value always in DB)
 TRADING_HALTED: bool = False
 HALT_REASON: str = ""
@@ -744,7 +747,60 @@ async def validate(
         "risk_pct": sizing.risk_pct, "method": sizing.method, "tier": alpha_tier,
         "source": signal.raw_source, "hc": is_high_conviction,
     })
+    # v4.6: Graduated DD response -- REDUCED mode at 50% of daily limit
+    try:
+        _red_opening = db_manager.get_opening_equity()
+        if _red_opening and _red_opening > 0 and account_equity > 0:
+            _red_dd_pct = ((_red_opening - account_equity) / _red_opening) * 100.0
+            _red_fraction = _red_dd_pct / config.DAILY_DRAWDOWN_LIMIT_PCT if config.DAILY_DRAWDOWN_LIMIT_PCT > 0 else 0
+            _reduced_thr = getattr(config, "DD_REDUCED_MODE_THRESHOLD_PCT", 0.50)
+            _reduced_mult = getattr(config, "DD_REDUCED_MODE_LOT_MULTIPLIER", 0.60)
+            if _red_fraction >= _reduced_thr:
+                _reduced_lot = max(round(order.lot_size * _reduced_mult, 2), 0.01)
+                logger.warning(
+                    "[RiskGuard] REDUCED MODE: DD=%.1f%% (%.0f%% of limit). Lots: %.2f -> %.2f",
+                    _red_dd_pct, _red_fraction * 100, order.lot_size, _reduced_lot,
+                )
+                db_manager.log_audit("DD_REDUCED_SIZING", {
+                    "dd_pct": round(_red_dd_pct, 2), "dd_fraction": round(_red_fraction, 2),
+                    "original_lots": order.lot_size, "reduced_lots": _reduced_lot,
+                })
+                order.lot_size = _reduced_lot
+                order.dd_mode = "REDUCED"
+    except Exception as _red_err:
+        logger.debug("[RiskGuard] Reduced DD check error: %s", _red_err)
+
     return True, "Approved", order
+
+
+def _check_equity_velocity(current_equity: float):
+    """Detect fast equity drops and halt if velocity exceeds threshold."""
+    now = time.time()
+    _equity_history.append((now, current_equity))
+    cutoff = now - (config.EQUITY_VELOCITY_WINDOW_MINS * 60)
+    window_start_equity = None
+    for ts, eq in _equity_history:
+        if ts >= cutoff:
+            window_start_equity = eq
+            break
+    if window_start_equity is None or window_start_equity <= 0:
+        return
+    drop_pct = ((window_start_equity - current_equity) / window_start_equity) * 100
+    if drop_pct >= config.EQUITY_VELOCITY_DROP_PCT:
+        reason = (
+            "Equity velocity breaker: "
+            + str(round(window_start_equity, 0)) + " -> " + str(round(current_equity, 0))
+            + " (" + str(round(drop_pct, 2)) + "% drop in "
+            + str(config.EQUITY_VELOCITY_WINDOW_MINS) + " min)"
+        )
+        halt_trading(reason)
+        logger.critical("[RiskGuard] EQUITY_VELOCITY_HALT: %s", reason)
+        db_manager.log_audit("EQUITY_VELOCITY_HALT", {
+            "start_equity": round(window_start_equity, 2),
+            "current_equity": round(current_equity, 2),
+            "drop_pct": round(drop_pct, 2),
+            "window_mins": config.EQUITY_VELOCITY_WINDOW_MINS,
+        })
 
 
 async def continuous_equity_monitor():
@@ -758,9 +814,10 @@ async def continuous_equity_monitor():
                     dd_pct = (opening - equity) / opening * 100
                     if dd_pct >= config.DAILY_DRAWDOWN_LIMIT_PCT:
                         halt_trading(f"Daily DD {dd_pct:.2f}% >= {config.DAILY_DRAWDOWN_LIMIT_PCT}%")
+                    _check_equity_velocity(equity)
         except Exception as e:
             logger.error(f"[RiskGuard] Equity monitor error: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(getattr(config, "EQUITY_MONITOR_INTERVAL_SECS", 30))
 
 
 async def daily_reset_watcher():
@@ -772,6 +829,15 @@ async def daily_reset_watcher():
             if now != last_day:
                 last_day = now
                 resume_trading()
+                # Set opening equity for the new trading day
+                try:
+                    from mt5_executor import mt5_executor as _mt5_rg
+                    _new_eq = _mt5_rg.get_account_equity()
+                    if _new_eq and _new_eq > 0:
+                        db_manager.set_opening_equity(_new_eq)
+                        logger.info('[RiskGuard] New day opening equity set: %.2f', _new_eq)
+                except Exception as _eq_err:
+                    logger.error(f'[RiskGuard] Failed to set opening equity on daily reset: {_eq_err}')
                 logger.info("[RiskGuard] Daily reset — halt cleared for new day.")
         except Exception as e:
             logger.error(f"[RiskGuard] Daily reset error: {e}")

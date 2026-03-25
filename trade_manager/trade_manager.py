@@ -25,6 +25,7 @@ from utils.logger import get_logger, get_trade_logger
 from utils.notifier import notify
 
 logger = get_logger(__name__)
+_trade_log = get_trade_logger()
 
 # ── Per-ticket state tracking ──
 _be_triggered: Set[int] = set()
@@ -247,6 +248,8 @@ async def _tick():
                             "[TM] STALE_EXIT: ticket=%d closed after %.0fmin (%.1f pips)",
                             ticket, minutes_open, unrealized_pips,
                         )
+                        _trade_log.info("STALE_EXIT | %s | %s | ticket=%d min=%.0f pips=%.1f",
+                            symbol, action, ticket, minutes_open, unrealized_pips)
                         db_manager.log_audit("STALE_EXIT", {
                             "ticket": ticket, "minutes_open": round(minutes_open, 1),
                             "unrealized_pips": round(unrealized_pips, 1),
@@ -319,6 +322,8 @@ async def _tick():
                                     "[TM] PROFIT_GUARD: ticket=%d progress=%.0f%% lock=%.0f%% SL→%.5f (%s)",
                                     ticket, progress * 100, lock_pct * 100, guard_sl, regime,
                                 )
+                                _trade_log.info("PROFIT_GUARD | %s | %s | ticket=%d SL=%.5f lock=%.0f%% regime=%s",
+                                    symbol, action, ticket, guard_sl, lock_pct * 100, regime)
                                 db_manager.log_audit("PROFIT_GUARD", {
                                     "ticket": ticket, "progress": round(progress, 2),
                                     "lock_pct": lock_pct, "guard_sl": guard_sl, "regime": regime,
@@ -353,6 +358,8 @@ async def _tick():
                                     "[TM] PYRAMID_ADD: parent=%d child=%d +%.2fL SL→%.5f",
                                     ticket, add_result.order, add_lots, new_sl,
                                 )
+                                _trade_log.info("PYRAMID | %s | %s | parent=%d add_lots=%.2f",
+                                    symbol, action, ticket, add_lots)
                                 db_manager.log_audit("PYRAMID_ADD", {
                                     "parent": ticket, "child": add_result.order,
                                     "add_lots": add_lots, "new_sl": new_sl,
@@ -399,6 +406,8 @@ async def _tick():
                     ok = mt5_executor.close_position(ticket)
                     if ok:
                         logger.warning("[TM] CVD_EXHAUSTION_EXIT: ticket=%d %s", ticket, cvd_reason)
+                        _trade_log.info("CVD_EXIT | %s | %s | ticket=%d unrealized=%.1fp",
+                            symbol, action, ticket, unrealized_pips)
                         db_manager.log_audit("CVD_EXHAUSTION_EXIT", {
                             "ticket": ticket, "reason": cvd_reason,
                             "unrealized_pips": round(unrealized_pips, 1),
