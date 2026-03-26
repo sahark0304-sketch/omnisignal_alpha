@@ -975,10 +975,36 @@ async def validate(
     return True, "Approved", order
 
 
+_velocity_halt_time: float = 0.0
+
 def _check_equity_velocity(current_equity: float):
     """Detect fast equity drops and halt if velocity exceeds threshold."""
+    global _velocity_halt_time
     now = time.time()
     _equity_history.append((now, current_equity))
+
+    # Auto-resume: if halted by velocity and enough time has passed, resume
+    auto_resume_mins = getattr(config, 'VELOCITY_AUTO_RESUME_MINS', 15)
+    if TRADING_HALTED and _velocity_halt_time > 0:
+        elapsed_mins = (now - _velocity_halt_time) / 60.0
+        if elapsed_mins >= auto_resume_mins:
+            logger.info(
+                "[RiskGuard] VELOCITY AUTO-RESUME: %.0f min since halt. Resuming.",
+                elapsed_mins,
+            )
+            resume_trading()
+            _velocity_halt_time = 0.0
+            _equity_history.clear()
+            db_manager.log_audit("VELOCITY_AUTO_RESUME", {
+                "minutes_halted": round(elapsed_mins, 1),
+                "equity_at_resume": round(current_equity, 2),
+            })
+        return  # Don't re-check velocity while halted
+
+    # Skip if already halted (prevents audit log spam)
+    if TRADING_HALTED:
+        return
+
     cutoff = now - (config.EQUITY_VELOCITY_WINDOW_MINS * 60)
     window_start_equity = None
     for ts, eq in _equity_history:
@@ -996,6 +1022,7 @@ def _check_equity_velocity(current_equity: float):
             + str(config.EQUITY_VELOCITY_WINDOW_MINS) + " min)"
         )
         halt_trading(reason)
+        _velocity_halt_time = now
         logger.critical("[RiskGuard] EQUITY_VELOCITY_HALT: %s", reason)
         db_manager.log_audit("EQUITY_VELOCITY_HALT", {
             "start_equity": round(window_start_equity, 2),

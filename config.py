@@ -159,8 +159,9 @@ DD_BLOCK_THRESHOLD_PCT: float = 0.90          # 80% of limit used → block new 
 # --- UPGRADE: Equity velocity circuit breaker ---
 # If equity drops this many % points in this many minutes → immediate REDUCED mode
 # Catches flash crashes / correlated multi-position wipeouts between 5-second checks
-EQUITY_VELOCITY_DROP_PCT: float   = 0.80   # 0.80% equity drop (e.g. $800 on $100K)
-EQUITY_VELOCITY_WINDOW_MINS: float = 5.0   # within any 5-minute rolling window
+EQUITY_VELOCITY_DROP_PCT: float   = 2.50   # 0.80% equity drop (e.g. $800 on $100K)
+EQUITY_VELOCITY_WINDOW_MINS: float = 5.0
+VELOCITY_AUTO_RESUME_MINS: int     = 15     # Auto-resume trading 15 min after velocity halt   # within any 5-minute rolling window
 
 # Initial balance snapshot: set once at account open, never changes
 # Used for max drawdown calculation from absolute base
