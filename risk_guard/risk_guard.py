@@ -96,10 +96,12 @@ def halt_trading(reason: str):
 
 
 def resume_trading():
-    global TRADING_HALTED, HALT_REASON
+    global TRADING_HALTED, HALT_REASON, _velocity_halt_time
     was_halted = TRADING_HALTED
     TRADING_HALTED = False
     HALT_REASON = ""
+    _velocity_halt_time = 0.0
+    _equity_history.clear()
     db_manager.set_system_state("halt", "0")
     db_manager.set_system_state("halt_reason", "")
     logger.info("[RiskGuard] Trading resumed.")

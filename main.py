@@ -394,12 +394,13 @@ async def process_signal(raw: RawSignal):
         return
 
     # ── Signal Amplifier boost (multi-source confluence) ──────────────
+    _riskguard_lot_ceiling = order.lot_size
+    _dd_mode = getattr(order, 'dd_mode', 'NORMAL')
+    _dampeners_active = _dd_mode == "REDUCED" or _riskguard_lot_ceiling < 0.04
+
     amp_boost, amp_n, amp_sources = signal_amplifier.get_confluence_boost(
         action=signal.action, symbol=signal.symbol
     )
-    if amp_boost > 1.0:
-        order.lot_size = round(min(order.lot_size * amp_boost, 100.0), 2)
-        order.alpha_multiplier *= amp_boost
 
     # ── Convexity Engine + Institutional Scaling (v4.2) ───────────────
     has_convergence = signal.raw_source == "AUTO_CONVERGENCE" or amp_n >= 2
@@ -418,13 +419,26 @@ async def process_signal(raw: RawSignal):
         has_convergence=has_convergence,
         consensus_score=consensus_score,
     )
-    if convex_boost > 1.0:
-        order.lot_size = round(min(order.lot_size * convex_boost, 100.0), 2)
-        order.alpha_multiplier *= convex_boost
+
+    # v6.2.1: When dampeners reduced lot size, do NOT allow boosts to undo it
+    if _dampeners_active:
         logger.info(
-            f"[Main] v4.2 Scaling: amp={amp_boost:.1f}x convex={convex_boost:.2f}x "
-            f"consensus={consensus_score} | lots={order.lot_size}"
+            "[Main] BOOST BLOCKED: dampeners active (lots=%.2f dd=%s) "
+            "— amp=%.1fx convex=%.2fx suppressed",
+            _riskguard_lot_ceiling, _dd_mode, amp_boost, convex_boost,
         )
+    else:
+        combined_boost = amp_boost * convex_boost
+        if combined_boost > 1.0:
+            _boosted = round(min(order.lot_size * combined_boost, _riskguard_lot_ceiling * 2.0), 2)
+            order.lot_size = _boosted
+            order.alpha_multiplier *= combined_boost
+            logger.info(
+                "[Main] v4.2 Scaling: amp=%.1fx convex=%.2fx combined=%.2fx "
+                "consensus=%d | lots=%.2f (cap=%.2f)",
+                amp_boost, convex_boost, combined_boost,
+                consensus_score, order.lot_size, _riskguard_lot_ceiling * 2.0,
+            )
 
     # ── PRE-REGISTER DEDUP (before order to prevent race condition) ──
     register_execution(signal.symbol, signal.action)

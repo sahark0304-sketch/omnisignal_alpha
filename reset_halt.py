@@ -33,11 +33,21 @@ def reset():
             acct = mt5.account_info()
             if acct:
                 equity = acct.equity
+                today = datetime.now().strftime("%Y-%m-%d")
+                c.execute(
+                    "INSERT INTO daily_snapshots (snap_date, opening_equity) VALUES (?, ?) "
+                    "ON CONFLICT(snap_date) DO UPDATE SET opening_equity = excluded.opening_equity",
+                    (today, equity),
+                )
                 c.execute(
                     "INSERT OR REPLACE INTO system_state (key, value) VALUES ('opening_equity', ?)",
                     (str(equity),),
                 )
-                print("[OK] Opening equity reset to $%.2f" % equity)
+                c.execute(
+                    "INSERT OR REPLACE INTO system_state (key, value) VALUES ('high_water_mark', ?)",
+                    (str(equity),),
+                )
+                print("[OK] Opening equity reset to $%.2f (daily_snapshots + system_state + HWM)" % equity)
             else:
                 print("[WARN] Could not get MT5 account info.")
             mt5.shutdown()

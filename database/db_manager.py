@@ -241,7 +241,8 @@ def init_db():
             label_sl_hit        INTEGER,
             label_pips_pnl      REAL,
             label_bars_held     INTEGER,
-            label_pnl_r         REAL
+            label_pnl_r         REAL,
+            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_mf_symbol_tf_ts ON market_features(symbol, timeframe, ts DESC);
         """)
@@ -597,6 +598,7 @@ def insert_market_features(features: Dict) -> int:
         "vwap_distance_atr", "ob_zone_proximity", "sweep_detected",
         "confluence_score", "confluence_max", "signal_id", "trade_ticket",
         "label_tp1_hit", "label_sl_hit", "label_pips_pnl", "label_bars_held", "label_pnl_r",
+        "created_at",
     ]
     filtered = {k: features.get(k) for k in cols}
     col_str = ", ".join(filtered.keys())
