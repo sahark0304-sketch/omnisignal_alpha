@@ -70,6 +70,9 @@ FEATURE_NAMES = [
     "pullback_slope",
     "slope_delta",
     "sl_to_atr_ratio",
+    "choppiness_index",
+    "wick_dominance_ratio",
+    "directional_consistency",
 ]
 
 SESSION_MAP = {"LONDON": 0, "NY": 1, "OVERLAP": 2, "ASIA": 3}
@@ -857,6 +860,12 @@ class WinProbabilityModel:
             float(row.get("spread_pips") or 0.0),
             float(row.get("time_since_last_trade_mins") or 999.0),
             float(row.get("current_dd_pct") or 0.0),
+            float(row.get("pullback_slope") or 0.0),
+            float(row.get("slope_delta") or 0.0),
+            float(row.get("sl_to_atr_ratio") or 0.0),
+            float(row.get("choppiness_index") or 50.0),
+            float(row.get("wick_dominance_ratio") or 0.50),
+            float(row.get("directional_consistency") or 0.50),
         ], dtype=np.float64)
 
     def _extract_legacy_features(self, row: Dict) -> Optional[np.ndarray]:
@@ -899,6 +908,12 @@ class WinProbabilityModel:
             spread,                                    # spread_pips
             999.0,                                     # time_since_last_trade_mins default
             0.0,                                       # current_dd_pct default
+            0.0,                                       # pullback_slope default
+            0.0,                                       # slope_delta default
+            0.0,                                       # sl_to_atr_ratio default
+            50.0,   # choppiness_index default
+            0.50,   # wick_dominance_ratio default
+            0.50,   # directional_consistency default
         ], dtype=np.float64)
 
     def _engineer_single(self, features: Dict) -> Optional[np.ndarray]:

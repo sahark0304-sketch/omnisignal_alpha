@@ -537,6 +537,34 @@ async def validate(
     if not htf_ok:
         return _reject(htf_reason, "HTF_TREND_GATE")
 
+    # ── 5b-2. v6.2 CHOP REGIME HARD GATE ────────────────────────────────────
+    if getattr(config, "CHOP_FILTER_ENABLED", True):
+        try:
+            from quant.chop_filter import check as chop_check, get_lot_dampener
+            chop_tradeable, chop_score, chop_details = chop_check(signal.symbol)
+            if not chop_tradeable:
+                return _reject(
+                    f"CHOP REGIME: tradeability={chop_score:.2f} "
+                    f"(CI={chop_details['choppiness_index']:.1f} "
+                    f"WDR={chop_details['wick_dominance']:.2f} "
+                    f"DCS={chop_details['directional_consistency']:.2f}) "
+                    f"\u2014 market is untradeable, blocking ALL entries",
+                    "CHOP_REGIME",
+                )
+            _chop_lot_dampener = get_lot_dampener(signal.symbol)
+        except Exception as _chop_err:
+            logger.debug("[RiskGuard] Chop filter error (pass-through): %s", _chop_err)
+            _chop_lot_dampener = 1.0
+
+    # ── 5b-3. v6.2 SESSION LOSS DAMPENER ─────────────────────────────────
+    _session_loss_dampener = 1.0
+    if getattr(config, "SESSION_LOSS_DAMPENER_ENABLED", True):
+        try:
+            from quant.breakout_guard import get_session_loss_dampener
+            _session_loss_dampener = get_session_loss_dampener(signal.symbol)
+        except Exception:
+            pass
+
     # ── 5c. Breakout Kill Switch ──────────────────────────────────────────────
     bo_blocked, bo_reason = is_counter_trend_blocked(signal.action, signal.raw_source)
     if bo_blocked:
@@ -735,6 +763,23 @@ async def validate(
         source_stats    = source_stats,
         alpha_multiplier = alpha_mult,
     )
+    # v6.2: Apply chop and session-loss dampeners to lot size
+    try:
+        _chop_damp = _chop_lot_dampener if 'CHOP_FILTER_ENABLED' in dir(config) else 1.0
+    except NameError:
+        _chop_damp = 1.0
+    try:
+        _sess_damp = _session_loss_dampener
+    except NameError:
+        _sess_damp = 1.0
+    _v62_combined_dampener = min(_chop_damp, _sess_damp)
+    if _v62_combined_dampener < 1.0:
+        sizing.lot_size = max(round(sizing.lot_size * _v62_combined_dampener, 2), 0.01)
+        logger.info(
+            "[RiskGuard] v6.2 DAMPENER: chop=%.2f session=%.2f combined=%.2f lots=%.2f",
+            _chop_damp, _sess_damp, _v62_combined_dampener, sizing.lot_size,
+        )
+
     # Toxicity-adaptive sizing: boost inversions, dampen uncertain regimes
     was_inverted = getattr(signal, "_was_inverted", False)
     tox_coeff, tox_sizing_reason = get_sizing_coefficient(

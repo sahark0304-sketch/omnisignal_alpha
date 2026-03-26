@@ -479,7 +479,10 @@ async def _handle_position_closed(ticket: int):
 
         try:
             from quant.breakout_guard import register_consecutive_win, register_consecutive_loss, register_trend_win
-            if pnl > 0:
+            _be_neutral_threshold = getattr(config, "BE_NEUTRAL_PNL_THRESHOLD", 3.0)
+            if abs(pnl) < _be_neutral_threshold:
+                logger.debug("[TM] BE-NEUTRAL: ticket=%d pnl=$%.2f— not counted for streaks", ticket, pnl)
+            elif pnl > 0:
                 register_consecutive_win(symbol)
                 _, regime = _measure_tick_intensity(symbol)
                 if regime == "FAST_TREND":
@@ -492,6 +495,11 @@ async def _handle_position_closed(ticket: int):
                         pass
             else:
                 register_consecutive_loss(symbol)
+                try:
+                    from quant.breakout_guard import register_session_loss
+                    register_session_loss(symbol, pnl)
+                except Exception:
+                    pass
         except Exception:
             pass
 

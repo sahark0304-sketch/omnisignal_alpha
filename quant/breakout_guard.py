@@ -89,6 +89,37 @@ def is_loss_paused(symbol: str) -> Tuple[bool, str]:
     return False, ""
 
 
+# v6.2: Session-Level Single-Loss Dampener
+_session_loss_until: Dict[str, float] = {}
+_session_loss_amount: Dict[str, float] = {}
+
+
+def register_session_loss(symbol: str, pnl: float):
+    """Called when a trade closes at a loss. If loss exceeds threshold, activate dampener."""
+    import config as _cfg
+    threshold = getattr(_cfg, "SESSION_SINGLE_LOSS_THRESHOLD", 50.0)
+    duration = getattr(_cfg, "SESSION_LOSS_DAMPENER_DURATION_SECS", 3600)
+    if abs(pnl) >= threshold:
+        _session_loss_until[symbol] = time.time() + duration
+        _session_loss_amount[symbol] = pnl
+        logger.warning(
+            "[BreakoutGuard] SESSION LOSS DAMPENER: %s lost $%.2f >= $%.0f threshold | "
+            "Lots reduced 50%% for %ds",
+            symbol, pnl, threshold, duration,
+        )
+
+
+def get_session_loss_dampener(symbol: str) -> float:
+    """Returns lot multiplier based on session loss state. 1.0 = normal, 0.5 = dampened."""
+    import config as _cfg
+    until = _session_loss_until.get(symbol, 0)
+    if time.time() < until:
+        return getattr(_cfg, "SESSION_LOSS_LOT_REDUCTION", 0.50)
+    _session_loss_until.pop(symbol, None)
+    _session_loss_amount.pop(symbol, None)
+    return 1.0
+
+
 # v4.4: Post-Win Trend Bias Lock
 TREND_WIN_BIAS_SECS = 300  # 5 minute counter-trend block after trend-aligned win
 _trend_win_bias: Dict[str, Dict] = {}  # symbol -> {direction, until_ts}
@@ -322,7 +353,7 @@ def _has_structure_break(action: str, symbol: str) -> bool:
         highs = rates['high'].astype(float)
         lows = rates['low'].astype(float)
 
-        lookback_bars = min(30, len(rates) - 5)
+        lookback_bars = min(15, len(rates) - 5)
 
         if action == "SELL":
             recent_low = np.min(lows[-lookback_bars:-1])

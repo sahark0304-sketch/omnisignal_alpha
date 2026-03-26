@@ -65,6 +65,9 @@ _FEATURE_NAMES: List[str] = [
     "pullback_slope",
     "slope_delta",
     "sl_to_atr_ratio",
+    "choppiness_index",
+    "wick_dominance_ratio",
+    "directional_consistency",
 ]
 
 
@@ -135,6 +138,7 @@ def compute_features(symbol: str, action: str, entry_price: float) -> Dict[str, 
 
         # Group 7: Momentum slope features (v6.1)
         features.update(_compute_slope_features(symbol))
+        features.update(_compute_chop_features(symbol))
 
     except Exception as exc:
         logger.error(f"[FeatureEng] Top-level failure: {exc}", exc_info=True)
@@ -185,6 +189,74 @@ def _compute_slope_features(symbol: str) -> Dict[str, float]:
 
     except Exception as e:
         logger.warning(f"[FeatureEng] Slope features failed: {e}")
+
+    return result
+
+
+def _compute_chop_features(symbol: str) -> Dict[str, float]:
+    """v6.2: Choppiness Index, Wick Dominance, and Directional Consistency."""
+    result = {
+        "choppiness_index": 50.0,
+        "wick_dominance_ratio": 0.50,
+        "directional_consistency": 0.50,
+    }
+    try:
+        rates = _safe_copy_rates(symbol, mt5.TIMEFRAME_M5, 0, 30)
+        if rates is None or len(rates) < 16:
+            return result
+
+        highs = rates["high"].astype(np.float64)
+        lows = rates["low"].astype(np.float64)
+        closes = rates["close"].astype(np.float64)
+        opens = rates["open"].astype(np.float64)
+
+        period = 14
+        if len(highs) >= period + 1:
+            tr = np.empty(len(highs))
+            tr[0] = highs[0] - lows[0]
+            for i in range(1, len(highs)):
+                tr[i] = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
+                )
+            recent_tr = tr[-period:]
+            hh = float(np.max(highs[-period:]))
+            ll = float(np.min(lows[-period:]))
+            range_hl = hh - ll
+            if range_hl > 0:
+                import math
+                sum_tr = float(np.sum(recent_tr))
+                log_period = math.log10(period)
+                if log_period > 0:
+                    ci = 100.0 * math.log10(sum_tr / range_hl) / log_period
+                    result["choppiness_index"] = round(float(np.clip(ci, 0, 100)), 2)
+
+        lookback = min(10, len(opens))
+        if lookback >= 3:
+            wick_ratios = []
+            for i in range(-lookback, 0):
+                cr = highs[i] - lows[i]
+                if cr < 1e-8:
+                    continue
+                body_top = max(opens[i], closes[i])
+                body_bot = min(opens[i], closes[i])
+                wicks = (highs[i] - body_top) + (body_bot - lows[i])
+                wick_ratios.append(wicks / cr)
+            if wick_ratios:
+                result["wick_dominance_ratio"] = round(float(np.mean(wick_ratios)), 4)
+
+        lookback_dcs = min(20, len(closes) - 1)
+        if lookback_dcs >= 5:
+            diffs = np.diff(closes[-(lookback_dcs + 1):])
+            up = int(np.sum(diffs > 0))
+            down = int(np.sum(diffs < 0))
+            total = up + down
+            if total > 0:
+                result["directional_consistency"] = round(max(up, down) / total, 4)
+
+    except Exception as e:
+        logger.warning("[FeatureEng] Chop features error: %s", e)
 
     return result
 
