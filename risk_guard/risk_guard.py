@@ -748,6 +748,112 @@ async def validate(
         )
 
 
+    # v6.1: Momentum Decay + Tight SL Lot Dampener
+    if getattr(config, 'SLOPE_DECAY_DAMPENER_ENABLED', False):
+        try:
+            _decay_applied = False
+            _sl_dist_raw = abs(entry - signal.stop_loss) if signal.stop_loss else 0
+            _atr_for_ratio = atr_value if atr_value > 0 else _sl_dist_raw
+
+            # Get live momentum slope from scanner
+            _live_slope = 0.0
+            _slope_delta_val = 0.0
+            try:
+                from quant.momentum_scanner import momentum_scanner as _mscan
+                _live_slope = _mscan.last_slope
+                _slope_delta_val = _mscan.slope_delta
+            except Exception:
+                pass
+
+            # Penalty 1: Momentum decay -- slope weakening toward zero
+            _slope_threshold = getattr(config, 'SLOPE_DECAY_THRESHOLD', 0.40)
+            if (signal.raw_source == "AUTO_PULLBACK"
+                    and abs(_live_slope) < _slope_threshold
+                    and abs(_live_slope) > 0.01):
+                _decay_mult = getattr(config, 'SLOPE_DECAY_LOT_MULTIPLIER', 0.50)
+                _old_lot = sizing.lot_size
+                sizing.lot_size = round(sizing.lot_size * _decay_mult, 2)
+                logger.warning(
+                    "[RiskGuard] SLOPE_DECAY_DAMPENER: slope=%.2f (< %.2f threshold) "
+                    "lots %.2f -> %.2f (%.0f%% penalty)",
+                    _live_slope, _slope_threshold, _old_lot, sizing.lot_size,
+                    (1 - _decay_mult) * 100,
+                )
+                db_manager.log_audit("SLOPE_DECAY_DAMPENER", {
+                    "slope": round(_live_slope, 3),
+                    "slope_delta": round(_slope_delta_val, 3),
+                    "lot_before": _old_lot,
+                    "lot_after": sizing.lot_size,
+                })
+                _decay_applied = True
+
+            # Penalty 2: Tight SL produces mechanical oversizing
+            if _sl_dist_raw > 0 and _atr_for_ratio > 0:
+                _sl_atr = _sl_dist_raw / _atr_for_ratio
+                _tight_threshold = getattr(config, 'TIGHT_SL_ATR_RATIO', 0.65)
+                if _sl_atr < _tight_threshold:
+                    _tight_mult = getattr(config, 'TIGHT_SL_LOT_MULTIPLIER', 0.60)
+                    _old_lot2 = sizing.lot_size
+                    sizing.lot_size = round(sizing.lot_size * _tight_mult, 2)
+                    logger.warning(
+                        "[RiskGuard] TIGHT_SL_DAMPENER: SL/ATR=%.2f (< %.2f) "
+                        "lots %.2f -> %.2f",
+                        _sl_atr, _tight_threshold, _old_lot2, sizing.lot_size,
+                    )
+                    db_manager.log_audit("TIGHT_SL_DAMPENER", {
+                        "sl_dist": round(_sl_dist_raw, 5),
+                        "atr": round(_atr_for_ratio, 5),
+                        "sl_atr_ratio": round(_sl_atr, 3),
+                        "lot_before": _old_lot2,
+                        "lot_after": sizing.lot_size,
+                    })
+
+            # Penalty 3: Rapid same-direction repeat from same scanner
+            _cooldown = getattr(config, 'RAPID_REPEAT_COOLDOWN_SECS', 900)
+            try:
+                from database import db_manager as _rdb
+                import time as _time
+                _recent = _rdb.get_recent_signals(limit=5) if hasattr(_rdb, 'get_recent_signals') else []
+                for _rsig in _recent:
+                    _rsrc = _rsig.get('source', '')
+                    _ract = _rsig.get('action', '')
+                    _rtime = _rsig.get('created_at', '')
+                    if (_rsrc == signal.raw_source
+                            and _ract == signal.action
+                            and _rtime):
+                        from datetime import datetime as _dt
+                        try:
+                            if isinstance(_rtime, str):
+                                _rtime = _dt.fromisoformat(_rtime)
+                            _age = (_dt.now() - _rtime).total_seconds()
+                            if _age < _cooldown:
+                                _repeat_mult = getattr(config, 'RAPID_REPEAT_LOT_MULTIPLIER', 0.50)
+                                _old_lot3 = sizing.lot_size
+                                sizing.lot_size = round(sizing.lot_size * _repeat_mult, 2)
+                                logger.warning(
+                                    "[RiskGuard] RAPID_REPEAT_DAMPENER: %s %s repeated in %.0fs "
+                                    "lots %.2f -> %.2f",
+                                    signal.raw_source, signal.action, _age,
+                                    _old_lot3, sizing.lot_size,
+                                )
+                                db_manager.log_audit("RAPID_REPEAT_DAMPENER", {
+                                    "source": signal.raw_source,
+                                    "action": signal.action,
+                                    "seconds_since_last": round(_age, 0),
+                                    "lot_before": _old_lot3,
+                                    "lot_after": sizing.lot_size,
+                                })
+                                break
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            if sizing.lot_size < 0.01:
+                sizing.lot_size = 0.01
+        except Exception as _damp_err:
+            logger.error("[RiskGuard] Dampener block error: %s", _damp_err)
+
     # v3.7 VIP Lot Floor
     vip_min = getattr(config, "VIP_MIN_LOT", 0.05)
     is_vip_signal = (

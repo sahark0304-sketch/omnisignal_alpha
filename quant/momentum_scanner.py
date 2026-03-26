@@ -53,6 +53,8 @@ class MomentumScanner:
         self._max_signals_per_hour: int = 10
         self._hourly_timestamps: list = []
         self._last_pressure: float = 0.0
+        self._last_slope: float = 0.0
+        self._slope_history: list = []
         self._cycle_count: int = 0
 
     # ------------------------------------------------------------------
@@ -125,6 +127,9 @@ class MomentumScanner:
             return
 
         slope = (ema[-1] - ema[-5]) / (5 * self._pip_size)
+        self._last_slope = slope
+        self._slope_history.append((time.time(), slope))
+        self._slope_history = [(t, s) for t, s in self._slope_history if time.time() - t < 600]
 
         if abs(slope) < self._slope_threshold:
             return
@@ -388,6 +393,21 @@ class MomentumScanner:
     @property
     def pressure(self) -> float:
         return self._last_pressure
+
+    @property
+    def last_slope(self) -> float:
+        return self._last_slope
+
+    @property
+    def slope_delta(self) -> float:
+        """Rate of change of slope over last 2 readings (10-bar window)."""
+        if len(self._slope_history) < 2:
+            return 0.0
+        _, older = self._slope_history[0]
+        _, newer = self._slope_history[-1]
+        if abs(older) < 1e-6:
+            return 0.0
+        return (newer - older) / abs(older)
 
 
 # -----------------------------------------------------------------------

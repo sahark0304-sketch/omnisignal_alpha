@@ -61,6 +61,10 @@ _FEATURE_NAMES: List[str] = [
     # Group 6: Trade Recency & Account State
     "time_since_last_trade_mins",
     "current_dd_pct",
+    # Group 7: Momentum Slope (v6.1 anti-decay features)
+    "pullback_slope",
+    "slope_delta",
+    "sl_to_atr_ratio",
 ]
 
 
@@ -128,10 +132,61 @@ def compute_features(symbol: str, action: str, entry_price: float) -> Dict[str, 
                 features["current_dd_pct"] = 0.0
         except Exception:
             features["current_dd_pct"] = 0.0
+
+        # Group 7: Momentum slope features (v6.1)
+        features.update(_compute_slope_features(symbol))
+
     except Exception as exc:
         logger.error(f"[FeatureEng] Top-level failure: {exc}", exc_info=True)
 
     return features
+
+
+
+def _compute_slope_features(symbol: str) -> Dict[str, float]:
+    """
+    v6.1: Extract M1 EMA(20) momentum slope and its rate of change.
+    These features let the ML model detect momentum decay -- the exact
+    failure mode that caused the -.84 Trade 2 loss.
+    """
+    result = {
+        "pullback_slope": 0.0,
+        "slope_delta": 0.0,
+        "sl_to_atr_ratio": 0.0,
+    }
+    try:
+        rates = _safe_copy_rates(symbol, mt5.TIMEFRAME_M1, 0, 60)
+        if rates is None or len(rates) < 25:
+            return result
+
+        closes = rates["close"].astype(np.float64)
+        highs = rates["high"].astype(np.float64)
+        lows = rates["low"].astype(np.float64)
+        pip_size = _get_pip_size(symbol)
+
+        ema = _compute_ema(closes, 20)
+        if len(ema) < 10:
+            return result
+
+        current_slope = (ema[-1] - ema[-5]) / (5 * pip_size)
+        result["pullback_slope"] = round(float(current_slope), 4)
+
+        older_slope = (ema[-6] - ema[-10]) / (4 * pip_size)
+        if abs(older_slope) > 1e-6:
+            result["slope_delta"] = round(
+                float((current_slope - older_slope) / abs(older_slope)), 4
+            )
+        else:
+            result["slope_delta"] = round(float(current_slope), 4)
+
+        atr_series = _compute_atr(highs, lows, closes, 14)
+        if len(atr_series) > 0 and atr_series[-1] > 1e-10:
+            result["sl_to_atr_ratio"] = round(float(atr_series[-1] / pip_size), 2)
+
+    except Exception as e:
+        logger.warning(f"[FeatureEng] Slope features failed: {e}")
+
+    return result
 
 
 def compute_dynamic_sl_tp(

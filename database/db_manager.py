@@ -666,3 +666,30 @@ def get_forensic(ticket: int) -> Optional[Dict]:
         ).fetchone()
     return dict(row) if row else None
 
+def get_recent_signals(limit: int = 5) -> list:
+    """Return recent executed signals from audit_log (RISK_APPROVED entries)."""
+    try:
+        with get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT event_type, details, created_at FROM audit_log "
+                "WHERE event_type = 'RISK_APPROVED' "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            results = []
+            for r in rows:
+                import json as _json
+                try:
+                    d = _json.loads(r["details"]) if r["details"] else {}
+                except Exception:
+                    d = {}
+                results.append({
+                    "source": d.get("source", ""),
+                    "action": d.get("action", ""),
+                    "created_at": r["created_at"],
+                })
+            return results
+    except Exception:
+        return []
+

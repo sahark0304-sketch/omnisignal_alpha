@@ -442,6 +442,16 @@ PYRAMID_ENABLED: bool                = True
 PYRAMID_ADD_PCT: float               = 0.25
 STALE_EXIT_MINUTES: int              = 30
 STALE_EXIT_MIN_PIPS: float           = 5.0
+
+
+# v6.1: Momentum Decay Lot Dampener
+SLOPE_DECAY_DAMPENER_ENABLED: bool = True
+SLOPE_DECAY_THRESHOLD: float = 0.40
+SLOPE_DECAY_LOT_MULTIPLIER: float = 0.50
+TIGHT_SL_ATR_RATIO: float = 0.65
+TIGHT_SL_LOT_MULTIPLIER: float = 0.60
+RAPID_REPEAT_COOLDOWN_SECS: int = 900
+RAPID_REPEAT_LOT_MULTIPLIER: float = 0.50
 VIP_MIN_LOT: float                   = 0.08
 SESSION_BLACKOUT_START_UTC: int      = 99
 SESSION_BLACKOUT_END_UTC: int        = 13

@@ -67,6 +67,9 @@ FEATURE_NAMES = [
     "spread_pips",
     "time_since_last_trade_mins",
     "current_dd_pct",
+    "pullback_slope",
+    "slope_delta",
+    "sl_to_atr_ratio",
 ]
 
 SESSION_MAP = {"LONDON": 0, "NY": 1, "OVERLAP": 2, "ASIA": 3}
