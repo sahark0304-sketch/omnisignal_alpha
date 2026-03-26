@@ -124,10 +124,28 @@ def is_halted() -> Tuple[bool, str]:
 def sync_halt_from_db():
     global TRADING_HALTED, HALT_REASON
     halted, reason = is_halted()
+    if halted and "Daily DD" in reason:
+        try:
+            from mt5_executor import mt5_executor as _mt5_sync
+            equity = _mt5_sync.get_account_equity()
+            opening = db_manager.get_opening_equity()
+            if opening and opening > 0 and equity and equity > 0:
+                actual_dd = ((opening - equity) / opening) * 100.0
+                if actual_dd < config.DAILY_DRAWDOWN_LIMIT_PCT:
+                    logger.info(
+                        "[RiskGuard] Startup: stale DD halt cleared — "
+                        "actual DD=%.2f%% < limit=%.1f%% "
+                        "(opening=$%.2f equity=$%.2f)",
+                        actual_dd, config.DAILY_DRAWDOWN_LIMIT_PCT, opening, equity,
+                    )
+                    resume_trading()
+                    return
+        except Exception as e:
+            logger.warning("[RiskGuard] Startup halt validation failed: %s", e)
     TRADING_HALTED = halted
     HALT_REASON = reason
     if halted:
-        logger.warning(f"[RiskGuard] Startup: halt active from DB — {reason}")
+        logger.warning("[RiskGuard] Startup: halt active from DB — %s", reason)
 
 
 
@@ -899,18 +917,33 @@ async def validate(
         except Exception as _damp_err:
             logger.error("[RiskGuard] Dampener block error: %s", _damp_err)
 
-    # v3.7 VIP Lot Floor
+    # v3.7 VIP Lot Floor — v6.2 FIX: do NOT override safety dampeners
+    # If chop or session-loss dampeners actively reduced lot size,
+    # applying a floor would negate those protective reductions.
     vip_min = getattr(config, "VIP_MIN_LOT", 0.05)
     is_vip_signal = (
-        signal.confidence >= 10
+        (signal.confidence >= 10 and not signal.raw_source.startswith(chr(65)+chr(85)+chr(84)+chr(79)+chr(95)))
         or signal.raw_source == "AUTO_CONVERGENCE"
     )
-    if is_vip_signal and sizing.lot_size < vip_min:
+    _any_dampener_active = False
+    try:
+        _any_dampener_active = _v62_combined_dampener < 1.0
+    except NameError:
+        pass
+    if is_vip_signal and sizing.lot_size < vip_min and not _any_dampener_active:
         logger.info(
-            f"[RiskGuard] VIP LOT FLOOR: {sizing.lot_size} -> {vip_min} "
-            f"(VIP signal: conf={signal.confidence} src={signal.raw_source})"
+            "[RiskGuard] VIP LOT FLOOR: %.2f -> %.2f "
+            "(VIP signal: conf=%d src=%s)",
+            sizing.lot_size, vip_min, signal.confidence, signal.raw_source,
         )
         sizing.lot_size = vip_min
+    elif is_vip_signal and sizing.lot_size < vip_min and _any_dampener_active:
+        logger.info(
+            "[RiskGuard] VIP LOT FLOOR SKIPPED: dampener active (chop=%.2f) "
+            "— keeping dampened lots=%.2f instead of floor=%.2f",
+            _v62_combined_dampener if '_v62_combined_dampener' in dir() else 0,
+            sizing.lot_size, vip_min,
+        )
 
     if sizing.lot_size <= 0:
         return _reject("Sizing returned 0 lots", "SIZING")

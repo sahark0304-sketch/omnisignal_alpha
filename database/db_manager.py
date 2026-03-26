@@ -672,7 +672,7 @@ def get_recent_signals(limit: int = 5) -> list:
         with get_connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT event_type, details, created_at FROM audit_log "
+                "SELECT event_type, details, ts FROM audit_log "
                 "WHERE event_type = 'RISK_APPROVED' "
                 "ORDER BY id DESC LIMIT ?",
                 (limit,)
@@ -687,7 +687,7 @@ def get_recent_signals(limit: int = 5) -> list:
                 results.append({
                     "source": d.get("source", ""),
                     "action": d.get("action", ""),
-                    "created_at": r["created_at"],
+                    "created_at": r["ts"],
                 })
             return results
     except Exception:

@@ -467,7 +467,7 @@ SESSION_LOSS_DAMPENER_DURATION_SECS: int = 3600
 
 # v6.2: BE-as-Neutral threshold
 BE_NEUTRAL_PNL_THRESHOLD: float     = 3.0
-VIP_MIN_LOT: float                   = 0.08
+VIP_MIN_LOT: float                   = 0.03
 SESSION_BLACKOUT_START_UTC: int      = 99
 SESSION_BLACKOUT_END_UTC: int        = 13
 GLOBAL_BIAS_KILL_THRESHOLD: float    = 0.60
