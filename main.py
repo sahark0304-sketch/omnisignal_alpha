@@ -86,6 +86,11 @@ async def _supervise(name: str, coro_fn, restart_delay: int = 15):
             break
         except Exception as e:
             logger.error(f"[Supervisor] Task '{name}' CRASHED: {e}. Restarting in {restart_delay}s...", exc_info=True)
+            try:
+                from utils.notifier import notify
+                notify(f"🔴 *OmniSignal TASK CRASH*\n\nTask: {name}\nError: {str(e)[:200]}\n\nAuto-restarting in {restart_delay}s...")
+            except Exception:
+                pass
             await asyncio.sleep(restart_delay)
 
 
@@ -515,6 +520,11 @@ async def queue_consumer():
             await process_signal(raw)
         except Exception as e:
             logger.error(f"[Main] Consumer error: {e}", exc_info=True)
+            try:
+                from utils.notifier import notify
+                notify(f"🔴 *OmniSignal ERROR*\n\nConsumer crashed: {str(e)[:200]}")
+            except Exception:
+                pass
         finally:
             done()
 
@@ -633,6 +643,11 @@ async def startup():
     # MT5 connection
     if not mt5_executor.connect():
         logger.critical("[Main] MT5 connection failed. Exiting.")
+        try:
+            from utils.notifier import notify
+            notify("🆘 *OmniSignal CRITICAL*\n\nMT5 connection FAILED. Bot has exited.\nCheck terminal login and restart.")
+        except Exception:
+            pass
         sys.exit(1)
 
     # Phase 1: Ensure opening equity is set for today (Bug-3 fix)
@@ -708,6 +723,22 @@ async def startup():
     if _ato_available and getattr(config, "ATO_ENABLED", True):
         tasks.append(asyncio.create_task(run_orchestrator_monitor(), name="ato_monitor"))
     logger.info(f"[Main] {len(tasks)} tasks launched. System is live.")
+    try:
+        from utils.notifier import notify
+        import datetime as _dt
+        _eq = mt5_executor.get_account_equity()
+        notify(
+            f"🟢 *OmniSignal Alpha v6.0 ONLINE*\n"
+            f"\n"
+            f"Mode: {config.OPERATING_MODE} | Phase: {config.PROP_FIRM_PHASE}\n"
+            f"Equity: ${_eq:,.2f}\n"
+            f"Daily DD Limit: {config.DAILY_DRAWDOWN_LIMIT_PCT}%\n"
+            f"Tasks active: {len(tasks)}\n"
+            f"\n"
+            f"All systems nominal. Trading is live."
+        )
+    except Exception:
+        pass
     await asyncio.gather(*tasks)
 
 
