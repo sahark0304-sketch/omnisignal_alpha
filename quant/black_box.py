@@ -266,7 +266,7 @@ def query_decisions(
                 f"SELECT * FROM decisions {where} ORDER BY ts DESC LIMIT ?",
                 params + [limit]
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [{k: r[k] for k in r.keys()} for r in rows]
     except Exception as e:
         logger.error(f"[BlackBox] Query failed: {e}")
         return []
@@ -281,10 +281,11 @@ def get_rejection_breakdown(limit: int = 500) -> Dict[str, int]:
                        COUNT(*) AS cnt
                 FROM decisions
                 WHERE final_decision = 'REJECTED'
-                ORDER BY ts DESC
+                GROUP BY reason
+                ORDER BY cnt DESC
                 LIMIT ?
             """, (limit,)).fetchall()
-        return {r["reason"]: r["cnt"] for r in rows}
+        return {r[0]: r[1] for r in rows}
     except Exception:
         return {}
 
