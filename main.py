@@ -394,51 +394,57 @@ async def process_signal(raw: RawSignal):
         return
 
     # ── Signal Amplifier boost (multi-source confluence) ──────────────
-    _riskguard_lot_ceiling = order.lot_size
-    _dd_mode = getattr(order, 'dd_mode', 'NORMAL')
-    _dampeners_active = _dd_mode == "REDUCED" or _riskguard_lot_ceiling < 0.04
-
-    amp_boost, amp_n, amp_sources = signal_amplifier.get_confluence_boost(
-        action=signal.action, symbol=signal.symbol
-    )
-
-    # ── Convexity Engine + Institutional Scaling (v4.2) ───────────────
-    has_convergence = signal.raw_source == "AUTO_CONVERGENCE" or amp_n >= 2
-    consensus_score = 0
-    try:
-        from quant.convergence_engine import convergence_engine
-        cs = convergence_engine.get_consensus_score()
-        consensus_score = cs.get("score", 0)
-    except Exception:
-        pass
-
-    convex_boost, convex_reason = compute_institutional_scaling(
-        signal_confidence=signal.confidence,
-        current_equity=equity,
-        source=signal.raw_source,
-        has_convergence=has_convergence,
-        consensus_score=consensus_score,
-    )
-
-    # v6.2.1: When dampeners reduced lot size, do NOT allow boosts to undo it
-    if _dampeners_active:
+    # v6.2.1: Block boosts for unvalidated AUTO signals. Telegram signals proceed normally.
+    _validated_scanners = {"AUTO_SMC", "AUTO_SCANNER"}
+    _skip_boosts = signal.raw_source.startswith("AUTO_") and signal.raw_source not in _validated_scanners
+    if _skip_boosts:
         logger.info(
-            "[Main] BOOST BLOCKED: dampeners active (lots=%.2f dd=%s) "
-            "— amp=%.1fx convex=%.2fx suppressed",
-            _riskguard_lot_ceiling, _dd_mode, amp_boost, convex_boost,
+            "[Main] Skipping boosts for unvalidated source: %s", signal.raw_source,
         )
     else:
-        combined_boost = amp_boost * convex_boost
-        if combined_boost > 1.0:
-            _boosted = round(min(order.lot_size * combined_boost, _riskguard_lot_ceiling * 2.0), 2)
-            order.lot_size = _boosted
-            order.alpha_multiplier *= combined_boost
+        _riskguard_lot_ceiling = order.lot_size
+        _dd_mode = getattr(order, 'dd_mode', 'NORMAL')
+        _dampeners_active = _dd_mode == "REDUCED" or _riskguard_lot_ceiling < 0.04
+
+        amp_boost, amp_n, amp_sources = signal_amplifier.get_confluence_boost(
+            action=signal.action, symbol=signal.symbol
+        )
+
+        has_convergence = signal.raw_source == "AUTO_CONVERGENCE" or amp_n >= 2
+        consensus_score = 0
+        try:
+            from quant.convergence_engine import convergence_engine
+            cs = convergence_engine.get_consensus_score()
+            consensus_score = cs.get("score", 0)
+        except Exception:
+            pass
+
+        convex_boost, convex_reason = compute_institutional_scaling(
+            signal_confidence=signal.confidence,
+            current_equity=equity,
+            source=signal.raw_source,
+            has_convergence=has_convergence,
+            consensus_score=consensus_score,
+        )
+
+        if _dampeners_active:
             logger.info(
-                "[Main] v4.2 Scaling: amp=%.1fx convex=%.2fx combined=%.2fx "
-                "consensus=%d | lots=%.2f (cap=%.2f)",
-                amp_boost, convex_boost, combined_boost,
-                consensus_score, order.lot_size, _riskguard_lot_ceiling * 2.0,
+                "[Main] BOOST BLOCKED: dampeners active (lots=%.2f dd=%s) "
+                "— amp=%.1fx convex=%.2fx suppressed",
+                _riskguard_lot_ceiling, _dd_mode, amp_boost, convex_boost,
             )
+        else:
+            combined_boost = amp_boost * convex_boost
+            if combined_boost > 1.0:
+                _boosted = round(min(order.lot_size * combined_boost, _riskguard_lot_ceiling * 2.0), 2)
+                order.lot_size = _boosted
+                order.alpha_multiplier *= combined_boost
+                logger.info(
+                    "[Main] v4.2 Scaling: amp=%.1fx convex=%.2fx combined=%.2fx "
+                    "consensus=%d | lots=%.2f (cap=%.2f)",
+                    amp_boost, convex_boost, combined_boost,
+                    consensus_score, order.lot_size, _riskguard_lot_ceiling * 2.0,
+                )
 
     # ── PRE-REGISTER DEDUP (before order to prevent race condition) ──
     register_execution(signal.symbol, signal.action)
@@ -624,7 +630,7 @@ async def daily_sentiment_loop():
             logger.debug(f"[Main] Sentiment error: {e}")
 
 
-async def startup():
+async def startup(): 
     import os
     os.makedirs("data", exist_ok=True)
 
@@ -690,30 +696,38 @@ async def startup():
 
     # Launch all background tasks
     tasks = [
-        asyncio.create_task(run_telegram_listener(),                                        name="telegram"),
-        asyncio.create_task(run_discord_listener(),                                         name="discord"),
-        asyncio.create_task(queue_consumer(),                                               name="queue"),
-        asyncio.create_task(trade_manager.run_management_loop(),                            name="trade_mgr"),
-        asyncio.create_task(run_heartbeat(),                                                name="heartbeat"),
-        asyncio.create_task(equity_snapshot_loop(),                                         name="equity_snap"),
-        asyncio.create_task(risk_guard.continuous_equity_monitor(),                          name="equity_monitor"),
-        asyncio.create_task(risk_guard.daily_reset_watcher(),                               name="daily_reset"),
-        asyncio.create_task(_supervise("liquidity_scanner",  liquidity_scanner.run),         name="liquidity_scanner"),
-        asyncio.create_task(_supervise("momentum_scanner",   momentum_scanner.run),          name="momentum_scanner"),
-        asyncio.create_task(_supervise("tfi_engine",         tick_flow_engine.run),           name="tfi_engine"),
-        asyncio.create_task(_supervise("catcd",              catcd_engine.run),               name="catcd"),
-        asyncio.create_task(_supervise("mr_engine",          mr_engine.run),                  name="mr_engine"),
-        asyncio.create_task(_supervise("convergence",        convergence_engine.run),          name="convergence"),
-        asyncio.create_task(_supervise("breakout_guard",     breakout_guard.run),              name="breakout_guard"),
-        asyncio.create_task(_supervise("smc_scanner",        smc_scanner.run),                 name="smc_scanner"),
-        asyncio.create_task(_supervise("shadow_ledger",      shadow_ledger.run_monitor),       name="shadow_ledger"),
-        asyncio.create_task(_supervise("toxicity_monitor",  toxicity_monitor.run),            name="toxicity_monitor"),
-        asyncio.create_task(_supervise("retry_queue",        retry_queue.run),                name="retry_queue"),
-        asyncio.create_task(daily_sentiment_loop(),                                         name="sentiment"),
-        asyncio.create_task(nightly_optimization_loop(),                                      name="nightly_ml"),
-        asyncio.create_task(macro_update_loop(),                                              name="macro_update"),
-
+        asyncio.create_task(run_telegram_listener(),                                   name="telegram"),
+        asyncio.create_task(run_discord_listener(),                                    name="discord"),
+        asyncio.create_task(queue_consumer(),                                          name="queue"),
+        asyncio.create_task(trade_manager.run_management_loop(),                       name="trade_mgr"),
+        asyncio.create_task(run_heartbeat(),                                           name="heartbeat"),
+        asyncio.create_task(equity_snapshot_loop(),                                    name="equity_snap"),
+        asyncio.create_task(risk_guard.continuous_equity_monitor(),                    name="equity_monitor"),
+        asyncio.create_task(risk_guard.daily_reset_watcher(),                          name="daily_reset"),
+        asyncio.create_task(_supervise("shadow_ledger", shadow_ledger.run_monitor),    name="shadow_ledger"),
+        asyncio.create_task(_supervise("toxicity_monitor", toxicity_monitor.run),      name="toxicity_monitor"),
+        asyncio.create_task(_supervise("retry_queue", retry_queue.run),                name="retry_queue"),
+        asyncio.create_task(daily_sentiment_loop(),                                    name="sentiment"),
+        asyncio.create_task(nightly_optimization_loop(),                               name="nightly_ml"),
+        asyncio.create_task(macro_update_loop(),                                       name="macro_update"),
     ]
+
+    if not getattr(config, "SCANNERS_DISABLED", False):
+        # v6.2.1: DISABLED — negative expectancy confirmed by backtest. Do not re-enable without validation.
+        tasks.extend([
+            asyncio.create_task(_supervise("liquidity_scanner", liquidity_scanner.run),  name="liquidity_scanner"),
+            # asyncio.create_task(_supervise("momentum_scanner", momentum_scanner.run),    name="momentum_scanner"),
+            # asyncio.create_task(_supervise("tfi_engine", tick_flow_engine.run),          name="tfi_engine"),
+            # asyncio.create_task(_supervise("catcd", catcd_engine.run),                   name="catcd"),
+            # asyncio.create_task(_supervise("mr_engine", mr_engine.run),                  name="mr_engine"),
+            # asyncio.create_task(_supervise("convergence", convergence_engine.run),       name="convergence"),
+            # asyncio.create_task(_supervise("breakout_guard", breakout_guard.run),        name="breakout_guard"),
+            asyncio.create_task(_supervise("smc_scanner", smc_scanner.run),              name="smc_scanner"),
+        ])
+        from quant.amd_engine import amd_engine
+        # tasks.append(asyncio.create_task(amd_engine.run(), name="amd_engine"))  # v6.2.1: DISABLED
+    else:
+        logger.info("[Main] SCANNERS_DISABLED=True — all AUTO scanners are OFF for validation")
 
     if config.LATENCY_ENABLED:
         tasks.append(asyncio.create_task(run_latency_monitor(), name="latency"))
@@ -723,16 +737,12 @@ async def startup():
             self_correction.run_review_loop(), name="self_correction"
         ))
 
-    from quant.amd_engine import amd_engine
-    tasks.append(asyncio.create_task(amd_engine.run()))
-
     if config.ML_DOLLAR_BARS_ENABLED:
         from quant.dollar_bar_engine import get_engine as get_dollar_engine
         dollar_engine = get_dollar_engine("XAUUSD")
         tasks.append(asyncio.create_task(
             _supervise("dollar_bars", dollar_engine.run), name="dollar_bars"
         ))
-
 
     if _ato_available and getattr(config, "ATO_ENABLED", True):
         tasks.append(asyncio.create_task(run_orchestrator_monitor(), name="ato_monitor"))
