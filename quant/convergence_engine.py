@@ -42,11 +42,12 @@ POLL_INTERVAL       = 4.0
 MAX_SIGNALS_PER_HOUR = 15
 
 SCANNER_WEIGHTS = {
-    "TFI":       0.30,
-    "CATCD":     0.22,
-    "Momentum":  0.32,
-    "MR":        0.13,
-    "Liquidity": 0.15,
+    "TFI":       0.231,
+    "CATCD":     0.169,
+    "Momentum":  0.246,
+    "MR":        0.100,
+    "Liquidity": 0.115,
+    "SMC":       0.138,
 }
 
 
@@ -205,6 +206,11 @@ class ConvergenceEngine:
         try:
             from quant.liquidity_scanner import liquidity_scanner
             result["Liquidity"] = (SCANNER_WEIGHTS["Liquidity"], liquidity_scanner.pressure)
+        except Exception:
+            pass
+        try:
+            from quant.smc_scanner import smc_scanner
+            result["SMC"] = (SCANNER_WEIGHTS["SMC"], smc_scanner.pressure)
         except Exception:
             pass
         return result

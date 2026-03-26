@@ -61,6 +61,9 @@ from quant.feature_engineering import compute_features, compute_dynamic_sl_tp
 from quant.regime_detector import regime_detector
 from quant.macro_filter import macro_filter
 from recovery.state_recovery import reconcile_on_startup, run_heartbeat
+from quant.smc_scanner import smc_scanner
+from quant.shadow_ledger import shadow_ledger
+from quant.prop_firm_finisher import prop_firm_finisher
 import config
 
 # v5.0: Adaptive Trade Orchestrator
@@ -673,6 +676,8 @@ async def startup():
         asyncio.create_task(_supervise("mr_engine",          mr_engine.run),                  name="mr_engine"),
         asyncio.create_task(_supervise("convergence",        convergence_engine.run),          name="convergence"),
         asyncio.create_task(_supervise("breakout_guard",     breakout_guard.run),              name="breakout_guard"),
+        asyncio.create_task(_supervise("smc_scanner",        smc_scanner.run),                 name="smc_scanner"),
+        asyncio.create_task(_supervise("shadow_ledger",      shadow_ledger.run_monitor),       name="shadow_ledger"),
         asyncio.create_task(_supervise("toxicity_monitor",  toxicity_monitor.run),            name="toxicity_monitor"),
         asyncio.create_task(_supervise("retry_queue",        retry_queue.run),                name="retry_queue"),
         asyncio.create_task(daily_sentiment_loop(),                                         name="sentiment"),

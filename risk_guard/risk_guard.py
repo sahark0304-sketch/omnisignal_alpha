@@ -188,12 +188,41 @@ async def validate(
                 )
             except Exception:
                 pass
+        try:
+            from quant.shadow_ledger import shadow_ledger as _sl
+            _sl.track_rejection(signal, stage, reason, current_bid, current_ask)
+        except Exception:
+            pass
         return False, reason, None
 
     # ── 0. Global halt ────────────────────────────────────────────────────────
     halted, halt_reason = is_halted()
     if halted:
         return _reject(f"Trading halted: {halt_reason}", "HALT")
+
+    # ── 0.5. Prop-Firm Finisher — Coast Mode gate ────────────────────────────
+    if getattr(config, "PROP_FIRM_PHASE", "") == "CHALLENGE":
+        try:
+            from quant.prop_firm_finisher import prop_firm_finisher
+            from quant.convergence_engine import convergence_engine as _conv_pf
+            _consensus_pf = 0
+            try:
+                _cs_pf = _conv_pf.get_consensus_score()
+                _consensus_pf = _cs_pf.get("score", 0)
+            except Exception:
+                pass
+            _coast = prop_firm_finisher.check_override(
+                signal_source      = signal.raw_source,
+                signal_confidence  = signal.confidence,
+                signal_action      = signal.action,
+                convergence_score  = _consensus_pf,
+                account_equity     = account_equity,
+            )
+            if _coast.active and _coast.lot_multiplier == 0.0:
+                return _reject(_coast.reason, "COAST_MODE")
+        except Exception as _coast_err:
+            pass
+
 
     # ── 1. Daily drawdown ─────────────────────────────────────────────────────
     opening_equity = db_manager.get_opening_equity()
@@ -757,6 +786,23 @@ async def validate(
     # v4.3.2: Consensus boost removed — it double-dipped with institutional scaling,
     # causing 0.37L trades that wiped session profits on reversal
     lot_size = round(sizing.lot_size, 2)
+
+    # v6.0: Prop-Firm Finisher lot scaling (only active in CHALLENGE phase)
+    if getattr(config, "PROP_FIRM_PHASE", "") == "CHALLENGE":
+        try:
+            from quant.prop_firm_finisher import prop_firm_finisher as _pfin
+            _coast_check = _pfin.check_override(
+                signal.raw_source, signal.confidence, signal.action
+            )
+            if _coast_check.active and 0 < _coast_check.lot_multiplier < 1.0:
+                _coast_lot = max(round(lot_size * _coast_check.lot_multiplier, 2), 0.01)
+                logger.info(
+                    "[RiskGuard] COAST MODE SIZING: %.2f -> %.2f (%.0f%%)",
+                    lot_size, _coast_lot, _coast_check.lot_multiplier * 100,
+                )
+                lot_size = _coast_lot
+        except Exception:
+            pass
 
     # v4.3.2: Hard lot ceiling — prevents any single trade from being so large
     # that one loss wipes the day's profits (learned from $413 blowback after $324 win)
