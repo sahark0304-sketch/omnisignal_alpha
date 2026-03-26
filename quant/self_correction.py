@@ -334,6 +334,64 @@ async def post_trade_forensic(ticket: int, pnl: float, tp1_hit: bool, entry_pric
 
         db_manager.log_audit("POST_TRADE_FORENSIC", forensic)
 
+        # v5.0: Trade Autopsy Telegram Alert
+        try:
+            from utils.notifier import send_autopsy
+            emoji = "🟢" if pnl > 0 else "🔴"
+            res_label = "WIN" if pnl > 0 else "LOSS"
+            duration_mins = 0
+            try:
+                trade_rec = db_manager.get_open_trades()
+                t_rec = next((t for t in trade_rec if t.get("ticket") == ticket), None)
+                if t_rec and t_rec.get("open_time"):
+                    import datetime as _dt
+                    ot = t_rec["open_time"]
+                    if isinstance(ot, str):
+                        ot = _dt.datetime.fromisoformat(ot)
+                    duration_mins = int((_dt.datetime.utcnow() - ot).total_seconds() / 60)
+            except Exception:
+                pass
+
+            shap_section = ""
+            conclusion = ""
+            shap_top5 = forensic.get("shap_top5", "")
+            if shap_top5:
+                drivers = [s.strip() for s in shap_top5.split(",")][:3]
+                shap_lines = []
+                for d in drivers:
+                    parts = d.split("=")
+                    if len(parts) == 2:
+                        fname = parts[0].strip()
+                        fval = parts[1].strip()
+                        direction = "↑" if not fval.startswith("-") else "↓"
+                        shap_lines.append(f"  {direction} {fname} ({fval})")
+                if shap_lines:
+                    shap_section = "*Top ML Drivers:*\n" + "\n".join(shap_lines)
+                    top_feat = drivers[0].split("=")[0].strip() if "=" in drivers[0] else drivers[0]
+                    top_val = drivers[0].split("=")[1].strip() if "=" in drivers[0] else ""
+                    sign_word = "positive" if not top_val.startswith("-") else "negative"
+                    conclusion = f"Trade {res_label.lower()}. Strongest {sign_word} factor was {top_feat} ({top_val})."
+            else:
+                conclusion = f"Trade {res_label.lower()}. SHAP analysis unavailable for this trade."
+
+            dur_str = f" | Duration: {duration_mins}m" if duration_mins > 0 else ""
+            autopsy_msg = (
+                f"{emoji} *TRADE AUTOPSY: #{ticket}*\n"
+                f"\n"
+                f"Result: *{res_label}* ${pnl:+.2f}{dur_str}\n"
+                f"Symbol: {symbol} | Action: {action}\n"
+                f"Exit: {efficiency}\n"
+                f"\n"
+            )
+            if shap_section:
+                autopsy_msg += shap_section + "\n\n"
+            autopsy_msg += f"_{conclusion}_"
+
+            send_autopsy(autopsy_msg)
+            logger.info("[Forensic] Trade autopsy sent for ticket %d", ticket)
+        except Exception as _autopsy_err:
+            logger.debug("[Forensic] Autopsy send failed: %s", _autopsy_err)
+
         # Immediate ML retraining trigger
         win_model.check_and_retrain()
 
