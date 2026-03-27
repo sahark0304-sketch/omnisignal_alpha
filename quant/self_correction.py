@@ -218,7 +218,7 @@ class SelfCorrectionEngine:
 
             trades = []
             for r in rows:
-                trade = dict(r)
+                trade = {k: r[k] for k in r.keys()}
                 # Attach black box decision if available
                 bb_decisions = query_decisions(
                     limit=1, source=trade.get("source", ""),

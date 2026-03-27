@@ -33,8 +33,9 @@ W_CI                = 0.45
 W_WDR               = 0.30
 W_DCS               = 0.25
 
-CHOP_BLOCK_THRESHOLD = 0.35
-CHOP_WARN_THRESHOLD  = 0.50
+import config as _cfg
+CHOP_BLOCK_THRESHOLD = getattr(_cfg, "CHOP_BLOCK_THRESHOLD", 0.45)
+CHOP_WARN_THRESHOLD  = getattr(_cfg, "CHOP_WARN_THRESHOLD", 0.55)
 
 CACHE_TTL_SECS      = 15
 TIMEFRAME_STR       = "M5"
@@ -261,3 +262,4 @@ def invalidate_cache(symbol: str = None):
         _cache.pop(symbol, None)
     else:
         _cache.clear()
+

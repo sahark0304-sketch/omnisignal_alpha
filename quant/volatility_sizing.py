@@ -84,9 +84,16 @@ def calculate_lot_size(
     if sl_dist <= 0:
         return SizingResult(0.01, 0.0, 0.0, 0.0, "ERROR", notes="Zero SL distance")
 
+    if pip_size <= 0:
+        logger.warning("[Sizing] pip_size=%.6f invalid, defaulting to 0.0001", pip_size)
+        pip_size = 0.0001
     sl_pips = sl_dist / pip_size
     if sl_pips <= 0:
         return SizingResult(0.01, 0.0, 0.0, 0.0, "ERROR", notes="Zero pip distance")
+
+    if pip_value_per_lot <= 0:
+        logger.warning("[Sizing] pip_value_per_lot=%.4f invalid, defaulting to 10.0", pip_value_per_lot)
+        pip_value_per_lot = 10.0
 
     # ── Raw lot ───────────────────────────────────────────────────────────────
     risk_amount = equity * (base_risk_pct / 100.0)

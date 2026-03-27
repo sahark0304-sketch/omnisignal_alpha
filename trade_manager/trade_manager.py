@@ -1,4 +1,4 @@
-"""
+﻿"""
 trade_manager/trade_manager.py — OmniSignal Alpha v4.6
 Active Position Management Loop.
 
@@ -34,6 +34,7 @@ _tp2_hit: Set[int] = set()
 _trailing: Dict[int, float] = {}
 _original_lots: Dict[int, float] = {}
 _pyramided: Set[int] = set()
+_partialed_tickets: Set[int] = set()  # v8.0: MFE partial close tracking
 _close_callback: Optional[Callable] = None
 
 # ── Caches ──
@@ -214,6 +215,46 @@ async def _tick():
         if not db_trade:
             continue
 
+        # == v7.0: Hard time kill at 60 minutes - trades >4hr lost -$699 ======
+        try:
+            _open_time_raw = pos.get("time") or db_trade.get("open_time")
+            if _open_time_raw:
+                import time as _time_mod
+                if isinstance(_open_time_raw, (int, float)):
+                    _age_mins = (_time_mod.time() - _open_time_raw) / 60
+                else:
+                    if isinstance(_open_time_raw, str):
+                        for _tfmt in ["%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"]:
+                            try:
+                                _open_time_raw = datetime.strptime(_open_time_raw, _tfmt)
+                                break
+                            except ValueError:
+                                continue
+                    if isinstance(_open_time_raw, datetime):
+                        _age_mins = (datetime.now() - _open_time_raw).total_seconds() / 60
+                    else:
+                        _age_mins = 0
+                _max_hold = getattr(config, "MAX_HOLD_MINUTES", 60)
+                if _age_mins >= _max_hold:
+                    logger.warning(
+                        "[TM] TIME KILL: ticket=%d held %.0f min (max %d). Closing.",
+                        ticket, _age_mins, _max_hold,
+                    )
+                    mt5_executor.close_position(ticket)
+                    db_manager.log_audit("TIME_KILL", {
+                        "ticket": ticket, "age_mins": round(_age_mins, 1),
+                        "max_hold": _max_hold,
+                    })
+                    try:
+                        notify(
+                            f"TIME KILL: ticket {ticket} held {_age_mins:.0f}min (max {_max_hold})"
+                        )
+                    except Exception:
+                        pass
+                    continue
+        except Exception as _tk_err:
+            logger.debug("[TM] Time kill check error: %s", _tk_err)
+
         tp1 = db_trade.get("tp1_price")
         tp2 = db_trade.get("tp2_price")
         tp3 = db_trade.get("tp3_price")
@@ -228,6 +269,179 @@ async def _tick():
             unrealized_pips = (current - entry) / pip_size
         else:
             unrealized_pips = (entry - current) / pip_size
+        # == v8.0 EDGE 1: MFE Trailing Stop ======================================
+        # v8.1: Regime-adaptive levels — wider trail in trending, tight in chop
+        try:
+            _mfe_pips = unrealized_pips
+            _mfe_sl_changed = False
+
+            _is_trending = False
+            try:
+                from quant.regime_detector import regime_detector, MarketRegime
+                _rd_state = regime_detector.detect_regime(symbol)
+                _is_trending = (_rd_state.regime == MarketRegime.TRENDING
+                                and _rd_state.confidence >= 0.5)
+            except Exception:
+                pass
+
+            # v8.2: Force trending MFE during active breakout
+            try:
+                from quant.breakout_hunter import breakout_hunter as _bh
+                _bo_active, _ = _bh.is_breakout_active()
+                if _bo_active:
+                    _is_trending = True
+            except Exception:
+                pass
+
+            if _is_trending:
+                _mfe_be_trigger = 8;   _mfe_be_buf = 0.08
+                _mfe_lock_trigger = 20; _mfe_lock_amt = 1.0
+                _mfe_partial_trigger = 35; _mfe_partial_lock = 2.0
+                _mfe_trail_dist = 1.5
+            else:
+                _mfe_be_trigger = 5;   _mfe_be_buf = 0.05
+                _mfe_lock_trigger = 15; _mfe_lock_amt = 0.80
+                _mfe_partial_trigger = 25; _mfe_partial_lock = 1.50
+                _mfe_trail_dist = 1.0
+
+            # TIER 1: Move SL to breakeven + tiny buffer
+            if _mfe_pips >= _mfe_be_trigger and ticket not in _be_triggered:
+                if action == "BUY":
+                    _be = round(entry + _mfe_be_buf, 2)
+                    if current_sl is None or current_sl < _be:
+                        mt5_executor.modify_sl(ticket, _be)
+                        _be_triggered.add(ticket)
+                        _mfe_sl_changed = True
+                        logger.info("[TM] MFE_BE: ticket=%d at +%.0f pips, SL -> BE %.2f", ticket, _mfe_pips, _be)
+                else:
+                    _be = round(entry - _mfe_be_buf, 2)
+                    if current_sl is None or current_sl > _be:
+                        mt5_executor.modify_sl(ticket, _be)
+                        _be_triggered.add(ticket)
+                        _mfe_sl_changed = True
+                        logger.info("[TM] MFE_BE: ticket=%d at +%.0f pips, SL -> BE %.2f", ticket, _mfe_pips, _be)
+
+            # TIER 2: Lock in profits
+            if _mfe_pips >= _mfe_lock_trigger and not _mfe_sl_changed:
+                if action == "BUY":
+                    _lock = round(entry + _mfe_lock_amt, 2)
+                    if current_sl is None or current_sl < _lock:
+                        mt5_executor.modify_sl(ticket, _lock)
+                        _mfe_sl_changed = True
+                        logger.info("[TM] MFE_LOCK8: ticket=%d +%.0fp, SL -> +8p %.2f", ticket, _mfe_pips, _lock)
+                else:
+                    _lock = round(entry - _mfe_lock_amt, 2)
+                    if current_sl is None or current_sl > _lock:
+                        mt5_executor.modify_sl(ticket, _lock)
+                        _mfe_sl_changed = True
+                        logger.info("[TM] MFE_LOCK8: ticket=%d +%.0fp, SL -> +8p %.2f", ticket, _mfe_pips, _lock)
+
+            # TIER 3: Lock deeper + partial close (once)
+            if _mfe_pips >= _mfe_partial_trigger:
+                if action == "BUY":
+                    _lock25 = round(entry + _mfe_partial_lock, 2)
+                    if current_sl is None or current_sl < _lock25:
+                        mt5_executor.modify_sl(ticket, _lock25)
+                        logger.info("[TM] MFE_LOCK15: ticket=%d +%.0fp, SL -> +15p %.2f", ticket, _mfe_pips, _lock25)
+                else:
+                    _lock25 = round(entry - _mfe_partial_lock, 2)
+                    if current_sl is None or current_sl > _lock25:
+                        mt5_executor.modify_sl(ticket, _lock25)
+                        logger.info("[TM] MFE_LOCK15: ticket=%d +%.0fp, SL -> +15p %.2f", ticket, _mfe_pips, _lock25)
+
+                if ticket not in _partialed_tickets:
+                    _half = round(pos["volume"] / 2, 2)
+                    if _half >= 0.01:
+                        _ok = mt5_executor.close_partial(ticket, _half)
+                        if _ok:
+                            _partialed_tickets.add(ticket)
+                            logger.info("[TM] MFE_PARTIAL: ticket=%d +%.0fp, closed 50%% (%.2f lots)", ticket, _mfe_pips, _half)
+                            db_manager.log_audit("MFE_PARTIAL_CLOSE", {"ticket": ticket, "mfe_pips": round(_mfe_pips, 1), "lots_closed": _half})
+
+            # TIER 4: Dynamic trail behind current price
+            if _mfe_pips >= _mfe_partial_trigger:
+                if action == "BUY":
+                    _trail = round(current - _mfe_trail_dist, 2)
+                    if current_sl is not None and _trail > current_sl + 0.3:
+                        mt5_executor.modify_sl(ticket, _trail)
+                else:
+                    _trail = round(current + _mfe_trail_dist, 2)
+                    if current_sl is not None and _trail < current_sl - 0.3:
+                        mt5_executor.modify_sl(ticket, _trail)
+
+        except Exception as _mfe_err:
+            logger.debug("[TM] MFE trailing error: %s", _mfe_err)
+        # == v7.1: Hybrid time-based exit - the $2,826 fix =======================
+        try:
+            _v71_open_time = pos.get("time") or db_trade.get("open_time")
+            _v71_age = 0
+            if _v71_open_time:
+                import time as _t71
+                if isinstance(_v71_open_time, (int, float)):
+                    _v71_age = (_t71.time() - _v71_open_time) / 60
+                else:
+                    if isinstance(_v71_open_time, str):
+                        for _tf in ["%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"]:
+                            try:
+                                _v71_open_time = datetime.strptime(_v71_open_time, _tf)
+                                break
+                            except ValueError:
+                                continue
+                    if isinstance(_v71_open_time, datetime):
+                        _v71_age = (datetime.now() - _v71_open_time).total_seconds() / 60
+
+            _v71_pnl = pos.get("profit", 0)
+            _v71_dir = 1 if action == "BUY" else -1
+
+            # RULE 4: Early cut - if losing >60% of SL distance after 8 min
+            if _v71_age >= 8 and _v71_pnl < 0 and original_sl and entry:
+                _sl_dist = abs(entry - original_sl)
+                _loss_dist = abs(current - entry)
+                if _sl_dist > 0 and _loss_dist / _sl_dist > 0.6:
+                    mt5_executor.close_position(ticket)
+                    logger.warning(
+                        "[TM] v7.1 EARLY_CUT: ticket=%d losing 60%%+ of SL at %.0fmin",
+                        ticket, _v71_age,
+                    )
+                    db_manager.log_audit("V71_EARLY_CUT", {
+                        "ticket": ticket, "age_mins": round(_v71_age, 1),
+                        "loss_pct": round(_loss_dist / _sl_dist * 100, 0),
+                    })
+                    continue
+
+            # RULE 1: Early BE - if profitable after 10 min, lock breakeven+2 pips
+            if _v71_age >= 10 and _v71_pnl > 0 and ticket not in _be_triggered:
+                _be_price = entry + (2 * pip_size * _v71_dir)
+                if current_sl and abs(current_sl - _be_price) > pip_size:
+                    success = mt5_executor.modify_sl(ticket, round(_be_price, 5))
+                    if success:
+                        _be_triggered.add(ticket)
+                        logger.info(
+                            "[TM] v7.1 EARLY_BE: ticket=%d at +%.0fmin, locking profit",
+                            ticket, _v71_age,
+                        )
+                        db_manager.log_audit("V71_EARLY_BE", {
+                            "ticket": ticket, "age_mins": round(_v71_age, 1),
+                        })
+
+            # RULE 2: At 20 min, if profitable, close 50%
+            if 20 <= _v71_age < 22 and _v71_pnl > 0 and ticket not in _tp1_hit:
+                _half = round(pos["volume"] / 2, 2)
+                if _half >= 0.01:
+                    mt5_executor.close_partial(ticket, _half)
+                    _tp1_hit.add(ticket)
+                    logger.info(
+                        "[TM] v7.1 TIME_PARTIAL: ticket=%d closing 50%% at +%.0fmin pnl=$%.2f",
+                        ticket, _v71_age, _v71_pnl,
+                    )
+                    db_manager.log_audit("V71_TIME_PARTIAL", {
+                        "ticket": ticket, "age_mins": round(_v71_age, 1),
+                        "closed_lots": _half, "pnl": round(_v71_pnl, 2),
+                    })
+
+        except Exception as _v71_err:
+            logger.debug("[TM] v7.1 hybrid exit error: %s", _v71_err)
+
         # ── FEATURE 1: STALE EXIT ──
         try:
             stale_mins = getattr(config, "STALE_EXIT_MINUTES", 30)
@@ -451,6 +665,10 @@ async def _tick():
 
 async def _handle_position_closed(ticket: int):
     """Fetch close data, update DB, trigger forensics and ML backfill."""
+    if ticket not in _original_lots:
+        return
+    _original_lots.pop(ticket, None)
+
     try:
         close_price = 0.0
         pnl = 0.0
@@ -511,6 +729,47 @@ async def _handle_position_closed(ticket: int):
             pip_size = mt5_executor.get_pip_size(symbol)
             _close_callback(ticket, close_price, pnl, tp1_hit, pip_size)
 
+        # v8.0: Smart re-entry after profitable TP1 hit
+        if tp1_hit and pnl > 0:
+            try:
+                _re_action = db_trade.get("action", "")
+                _re_entry = db_trade.get("entry_price", 0)
+                _re_sl = db_trade.get("sl_price", 0)
+                _re_tp1 = db_trade.get("tp1_price", 0)
+                _re_tp2 = db_trade.get("tp2_price")
+
+                if _re_action and _re_entry and _re_sl and _re_tp1:
+                    _re_content = (
+                        "XAUUSD %s @ %.2f\n"
+                        "SL: %.2f\n"
+                        "TP: %.2f\n"
+                        "[Smart-ReEntry] TP1 hit, re-entering on trend continuation"
+                    ) % (_re_action, close_price, _re_sl, _re_tp2 or _re_tp1)
+
+                    async def _delayed_reentry():
+                        import asyncio
+                        await asyncio.sleep(60)
+                        from ingestion.signal_queue import RawSignal, push
+                        raw = RawSignal(
+                            source="AUTO_REENTRY",
+                            content=_re_content,
+                            received_at=datetime.now(),
+                        )
+                        await push(raw)
+                        logger.info(
+                            "[TM] SMART RE-ENTRY pushed: %s %s after TP1 (pnl=$%.2f)",
+                            symbol, _re_action, pnl,
+                        )
+
+                    import asyncio
+                    asyncio.ensure_future(_delayed_reentry())
+                    db_manager.log_audit("SMART_REENTRY_QUEUED", {
+                        "ticket": ticket, "action": _re_action,
+                        "close_price": close_price, "pnl": round(pnl, 2),
+                    })
+            except Exception as _re_err:
+                logger.debug("[TM] Smart re-entry error: %s", _re_err)
+
     except Exception as e:
         logger.error("[TM] Close handler error for ticket %d: %s", ticket, e)
     finally:
@@ -525,8 +784,13 @@ def cleanup_closed_ticket(ticket: int):
     _trailing.pop(ticket, None)
     _original_lots.pop(ticket, None)
     _pyramided.discard(ticket)
+    _partialed_tickets.discard(ticket)
     try:
         from quant.flow_exit import cleanup_ticket
         cleanup_ticket(ticket)
     except Exception:
         pass
+
+
+
+

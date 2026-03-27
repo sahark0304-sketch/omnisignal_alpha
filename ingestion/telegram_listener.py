@@ -114,11 +114,24 @@ async def run_telegram_listener():
         logger.info(f"[Telegram] Connecting -- monitoring {len(channels)} channel(s)... (attempt {attempt})")
 
         try:
-            bot_token = getattr(config, "TELEGRAM_BOT_TOKEN", None) or getattr(config, "NOTIFY_BOT_TOKEN", None)
-            if bot_token:
-                await client.start(bot_token=bot_token)
+            # v6.3.1 FIX: Always use MTProto user session, never bot_token.
+            # Bot tokens cannot read public channels the bot is not admin of.
+            await client.start()
+
+            me = await client.get_me()
+            if me.bot:
+                logger.error(
+                    '[Telegram] CONNECTED AS BOT — cannot read channels! '
+                    'Delete omnisignal_session.session_str and restart '
+                    'to trigger user phone login.'
+                )
+                await client.disconnect()
+                return
             else:
-                await client.start()
+                logger.info(
+                    '[Telegram] Connected as user: %s (ID: %d) — can read all channels',
+                    me.first_name, me.id,
+                )
 
             _telethon_client = client
             _save_session_string(client)

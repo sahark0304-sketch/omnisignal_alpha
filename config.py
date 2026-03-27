@@ -1,22 +1,6 @@
-"""
-config.py — OmniSignal Alpha v4.2
-Phase 1: Prop Firm Survival + ML Data Pipeline
-
-AUDIT FIXES IMPLEMENTED:
-  FIX-1: DAILY_DRAWDOWN_LIMIT_PCT now applied against opening equity (not current)
-  FIX-2: MAX_DRAWDOWN_LIMIT_PCT added — was completely absent in v2.0
-  FIX-3: DD_OPENING_EQUITY_HOUR added for correct prop firm reset time
-  FIX-4: Continuous equity monitor parameters (not just on-signal checks)
-
-ADDITIONAL INSTITUTIONAL UPGRADES (beyond audit scope):
-  + Graduated DD response: 3 tiers (NORMAL → REDUCED → HALT)
-  + Consecutive loss circuit breaker with anti-martingale sizing
-  + Session-aware risk budgeting (scale risk by H-exponent per session)
-  + Spread percentile filter (trade only when spread < 60th percentile)
-  + Equity velocity circuit breaker (halt if equity drops X% in Y minutes)
-  + Prop firm phase awareness (CHALLENGE vs FUNDED → different aggression)
-  + Trade frequency governor (max trades per hour/day for prop firm compliance)
-  + ML feature recording schema controls
+﻿"""
+config.py — OmniSignal Alpha v6.3.1
+RESTORED March 17 Architecture + 3 Bug Fixes + Dampener Floor
 """
 
 import os
@@ -38,22 +22,16 @@ OPERATING_MODE: str = os.getenv("OPERATING_MODE", Mode.DEMO)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  PROP FIRM PHASE  ← NEW in v3.0
-#  Set via .env: PROP_FIRM_PHASE=CHALLENGE or FUNDED
-#  CHALLENGE: allowed to be more aggressive (need to hit profit target)
-#  FUNDED:    survival-first, tighter DD guards, smaller sizing
+#  PROP FIRM PHASE
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PropPhase:
     CHALLENGE = "CHALLENGE"
     FUNDED    = "FUNDED"
-    PERSONAL  = "PERSONAL"      # No prop firm rules — full Kelly/RL sizing
+    PERSONAL  = "PERSONAL"
 
 PROP_FIRM_PHASE: str = os.getenv("PROP_FIRM_PHASE", PropPhase.FUNDED)
-
-# Challenge phase: how much profit is still needed to pass (0.0 = already passed)
 CHALLENGE_PROFIT_TARGET_PCT: float = float(os.getenv("CHALLENGE_PROFIT_TARGET_PCT", "8.0"))
-# Current profit made so far (% of initial balance) — update daily
 CHALLENGE_PROFIT_CURRENT_PCT: float = float(os.getenv("CHALLENGE_PROFIT_CURRENT_PCT", "0.0"))
 
 
@@ -63,40 +41,38 @@ CHALLENGE_PROFIT_CURRENT_PCT: float = float(os.getenv("CHALLENGE_PROFIT_CURRENT_
 
 TELEGRAM_API_ID: int         = int(os.getenv("TELEGRAM_API_ID", "0"))
 TELEGRAM_API_HASH: str       = os.getenv("TELEGRAM_API_HASH", "")
-# Bot API (HTTP sendMessage) — separate from MTProto api_hash above; do not overload TELEGRAM_API_HASH.
 TELEGRAM_BOT_TOKEN: str      = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("NOTIFY_BOT_TOKEN") or ""
 TELEGRAM_SESSION_NAME: str   = "omnisignal_session"
 
-# MTProto monitored channels / supergroups (negative peer ids). Used when TELEGRAM_CHANNELS env is empty.
 MONITORED_CHANNELS: List[int] = [
-    -1001983734792,  # prime forex guide
-    -1001347617494,  # Forex Scalping signals (free)
-    -1001536621768,  # Vasilytrader (free forex signals)
-    -1001309043988,  # Whale Alert
-    -1001510927248,  # ForexPlace Signals
-    -1002489241398,  # StarEdge Market
-    -1002448604508,  # Ict Forex Star
-    -1001872299004,  # Gold Singlas daily
-    -1002219243374,  # Sure Shot Forex
-    -1002293261831,  # Sure Shot Forex 2
-    -1003655941757,  # 1000pips Builder (Official)
-    -1002494813464,  # 1000pips Builder Official 2
-    -1001949192523,  # GBP/JPY SIGNALS
-    -1001623345960,  # FX PROFIT SIGNAL (FREE)
-    -1001921425619,  # SNYTHETICX SIGNALS
-    -1003372787430,  # Jeppe Kirk Bonde TM
-    -1003781656280,  # GOLDCHAIN TRADING SIGNALS (free)
-    -1002273704999,  # XAUUSD & GOLD TRADING SIGNALS
-    -1001207301837,  # XAUUSDGOLDsinglas
-    -1001785197109,  # AnableSignals
-    -1001387511343,  # FBS Analytics
-    -1002176701424,  # United Kings Singles
-    -1001588519179,  # SureShot GOLD
-    -1003738551742,  # Gold Signals 98% Sure
-    -1002223574325,  # United Kings VIP- Forex
-    -1001814562728,  # Forex Gold Signals
-    -1001651583302,  # FXTradingVision | Forex & Crypto Signals
-    -1002399120063,  # FX Culture | Free Signal Group
+    -1001983734792,
+    -1001347617494,
+    -1001536621768,
+    -1001309043988,
+    -1001510927248,
+    -1002489241398,
+    -1002448604508,
+    -1001872299004,
+    -1002219243374,
+    -1002293261831,
+    -1003655941757,
+    -1002494813464,
+    -1001949192523,
+    -1001623345960,
+    -1001921425619,
+    -1003372787430,
+    -1003781656280,
+    -1002273704999,
+    -1001207301837,
+    -1001785197109,
+    -1001387511343,
+    -1002176701424,
+    -1001588519179,
+    -1003738551742,
+    -1002223574325,
+    -1001814562728,
+    -1001651583302,
+    -1002399120063,
 ]
 
 _telegram_channels_env = os.getenv("TELEGRAM_CHANNELS", "").strip()
@@ -111,7 +87,7 @@ DISCORD_CHANNEL_IDS: List[int] = [int(x) for x in os.getenv("DISCORD_CHANNEL_IDS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  AI ENGINE (Pillars 1, 14)
+#  AI ENGINE — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
 GEMINI_API_KEY: str          = os.getenv("GEMINI_API_KEY", "")
@@ -127,87 +103,51 @@ PROMPT_CORRECTIONS_FILE: str      = "data/prompt_corrections.json"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ██████████  PROP FIRM DRAWDOWN GUARD — PHASE 1 CORE  ██████████
-#  These parameters are the difference between keeping and losing funded capital.
+#  PROP FIRM DRAWDOWN GUARD
 # ─────────────────────────────────────────────────────────────────────────────
 
-# --- BUG-2 FIX: Max drawdown now exists ---
-# FTMO standard: 10% max drawdown from initial balance (trailing or static)
-# Funded Trader: 8-12%. Match your specific prop firm's rules exactly.
 MAX_DRAWDOWN_LIMIT_PCT: float  = float(os.getenv("MAX_DD_PCT", "8.0"))
-
-# Daily drawdown: % of OPENING EQUITY for that day (not current equity)
 DAILY_DRAWDOWN_LIMIT_PCT: float = float(os.getenv("DAILY_DD_PCT", "4.0"))
-
-# --- BUG-3 FIX: Server reset time for opening equity snapshot ---
-# Prop firms reset daily DD at THEIR server midnight, not your local time.
-# IC Markets: 00:00 server time (EET/EEST). FTMO: 00:00 CET/CEST.
-# Express as UTC offset for the broker server: IC Markets = 2 (UTC+2 normal, UTC+3 DST)
 DD_OPENING_EQUITY_SERVER_UTC_OFFSET: int = int(os.getenv("BROKER_UTC_OFFSET", "2"))
-
-# --- BUG-4 FIX: Continuous equity monitoring interval ---
-EQUITY_MONITOR_INTERVAL_SECS: int = 5    # Check floating P&L every 5 seconds
-
-# --- UPGRADE: Graduated DD response (3 tiers, not binary HALT) ---
-# Tier 1: When DD reaches this fraction of daily limit → reduce all lot sizes
-DD_REDUCED_MODE_THRESHOLD_PCT: float = 0.50   # 50% of daily limit used → REDUCED mode
-DD_REDUCED_MODE_LOT_MULTIPLIER: float = 0.60  # Cut lots to 40% of normal
-# Tier 2: When DD reaches this fraction → block all new entries (but manage existing)
-DD_BLOCK_THRESHOLD_PCT: float = 0.90          # 80% of limit used → block new entries
-# Tier 3: Full halt at 100% (existing behaviour)
-
-# --- UPGRADE: Equity velocity circuit breaker ---
-# If equity drops this many % points in this many minutes → immediate REDUCED mode
-# Catches flash crashes / correlated multi-position wipeouts between 5-second checks
-EQUITY_VELOCITY_DROP_PCT: float   = 2.50   # 0.80% equity drop (e.g. $800 on $100K)
+EQUITY_MONITOR_INTERVAL_SECS: int = 5
+DD_REDUCED_MODE_THRESHOLD_PCT: float = 0.50
+DD_REDUCED_MODE_LOT_MULTIPLIER: float = 0.60
+DD_BLOCK_THRESHOLD_PCT: float = 0.90
+EQUITY_VELOCITY_DROP_PCT: float   = 3.50
 EQUITY_VELOCITY_WINDOW_MINS: float = 5.0
-VELOCITY_AUTO_RESUME_MINS: int     = 15     # Auto-resume trading 15 min after velocity halt   # within any 5-minute rolling window
-
-# Initial balance snapshot: set once at account open, never changes
-# Used for max drawdown calculation from absolute base
-# Set via .env: INITIAL_ACCOUNT_BALANCE=100000
+VELOCITY_AUTO_RESUME_MINS: int     = 15
 INITIAL_ACCOUNT_BALANCE: float = float(os.getenv("INITIAL_ACCOUNT_BALANCE", "10000"))
-
-# --- Phase-specific risk overrides ---
-# In CHALLENGE phase with >50% of profit target remaining: slightly more aggressive
-CHALLENGE_RISK_MULTIPLIER: float  = 1.20   # 20% more risk when in challenge, winning
-# In FUNDED phase: ultra-conservative beyond 50% daily DD used
+CHALLENGE_RISK_MULTIPLIER: float  = 1.20
 FUNDED_CONSERVATIVE_MULTIPLIER: float = 0.70
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  TRADE FREQUENCY GOVERNOR  ← NEW in v3.0
-#  Prop firms can penalize or ban accounts for excessive trading.
-#  Also prevents tilt-style overtrading after losses.
+#  TRADE FREQUENCY GOVERNOR — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_TRADES_PER_HOUR: int  = 6     # Max 6 new entries per rolling hour
-MAX_TRADES_PER_DAY: int   = 20    # Max 20 trades per trading day
+MAX_TRADES_PER_HOUR: int  = 6
+MAX_TRADES_PER_DAY: int   = 20
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CONSECUTIVE LOSS CIRCUIT BREAKER  ← NEW in v3.0
-#  Anti-martingale: size down after losses, never up
+#  CONSECUTIVE LOSS CIRCUIT BREAKER — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_CONSECUTIVE_LOSSES: int           = 5     # After 3 in a row → size reduction kicks in
-CONSECUTIVE_LOSS_MULTIPLIER: float    = 0.65  # Halve lot size until win streak recovers
-RECOVERY_STREAK_NEEDED: int           = 2     # 2 consecutive wins restores full sizing
-# Consecutive wins → allowed to scale up slightly (momentum of edge)
-CONSECUTIVE_WIN_SCALE_UP_AFTER: int   = 3     # After 4 wins in a row
-CONSECUTIVE_WIN_SCALE_MULTIPLIER: float = 1.25 # 15% size increase (modest, not Kelly yet)
+MAX_CONSECUTIVE_LOSSES: int           = 5
+CONSECUTIVE_LOSS_MULTIPLIER: float    = 0.65
+RECOVERY_STREAK_NEEDED: int           = 2
+CONSECUTIVE_WIN_SCALE_UP_AFTER: int   = 3
+CONSECUTIVE_WIN_SCALE_MULTIPLIER: float = 1.25
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CONFLUENCE ENGINE (Pillars 2 & 3)
+#  CONFLUENCE ENGINE — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
 CONFLUENCE_ENABLED: bool         = True
-CONFLUENCE_TIMEFRAME: str        = "M15"   # XAUUSD scalper primary TF
-CONFLUENCE_HTF_TIMEFRAME: str    = "H4"    # Higher timeframe trend context
-CONFLUENCE_MIN_SCORE: int        = 2       # Raised from 2 to 3/8 for v3.0
-
-# Classic indicators (still used as one component, not the entire stack)
+CONFLUENCE_TIMEFRAME: str        = "M15"
+CONFLUENCE_HTF_TIMEFRAME: str    = "H4"
+CONFLUENCE_MIN_SCORE: int        = 2
 CONFLUENCE_RSI_PERIOD: int       = 14
 CONFLUENCE_RSI_OB: float         = 65.0
 CONFLUENCE_RSI_OS: float         = 35.0
@@ -219,46 +159,37 @@ CONFLUENCE_MACD_SLOW: int        = 26
 CONFLUENCE_MACD_SIGNAL: int      = 9
 CONFLUENCE_OB_LOOKBACK: int      = 50
 CONFLUENCE_OB_ZONE_PCT: float    = 0.002
-
-# NEW: Hurst exponent filter
 HURST_ENABLED: bool              = True
-HURST_LOOKBACK: int              = 100     # bars for rolling Hurst computation
-HURST_MIN_THRESHOLD: float       = 0.52   # Below this = near-random, don't trade trend-following
-HURST_MEAN_REVERSION_MAX: float  = 0.48   # Above 0.48 but below 0.52 = neutral
-
-# NEW: VWAP filter
+HURST_LOOKBACK: int              = 100
+HURST_MIN_THRESHOLD: float       = 0.52
+HURST_MEAN_REVERSION_MAX: float  = 0.48
 VWAP_ENABLED: bool               = True
-VWAP_MAX_DISTANCE_ATR: float     = 2.5    # Don't chase entries >2.5 ATR from session VWAP
-
-# NEW: Spread percentile filter (institutional quality execution filter)
+VWAP_MAX_DISTANCE_ATR: float     = 2.5
 SPREAD_PERCENTILE_ENABLED: bool  = True
-SPREAD_PERCENTILE_LOOKBACK: int  = 60     # bars for rolling spread distribution
-SPREAD_PERCENTILE_MAX: float     = 0.75   # Only trade when spread < 60th percentile
+SPREAD_PERCENTILE_LOOKBACK: int  = 60
+SPREAD_PERCENTILE_MAX: float     = 0.75
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SESSION-AWARE RISK MULTIPLIERS  ← NEW in v3.0
-#  XAUUSD H≈0.62 London (trending), H≈0.55 NY (volatile), H≈0.48 Asia (random)
-#  Scale maximum daily risk budget allocated per session.
+#  SESSION-AWARE RISK MULTIPLIERS
 # ─────────────────────────────────────────────────────────────────────────────
 
 SESSION_RISK_BUDGET_PCT: Dict[str, float] = {
-    "LONDON":   0.50,    # 50% of daily risk budget available during London
-    "NY":       0.35,    # 35% during NY — more volatile, more likely to spike
-    "OVERLAP":  0.15,    # 15% during London/NY overlap — most volatile hour
-    "ASIA":     0.10,    # 0% during Asia — near-random, don't waste daily budget
+    "LONDON":   0.50,
+    "NY":       0.35,
+    "OVERLAP":  0.15,
+    "ASIA":     0.10,
 }
-# UTC hours for each session (server time aware; adjust via DD_OPENING_EQUITY_SERVER_UTC_OFFSET)
 SESSION_HOURS_UTC: Dict[str, tuple] = {
-    "ASIA":    (22, 7),   # 22:00 - 07:00 UTC
-    "LONDON":  (7, 12),   # 07:00 - 12:00 UTC
-    "OVERLAP": (12, 14),  # 12:00 - 14:00 UTC (London/NY overlap)
-    "NY":      (14, 21),  # 14:00 - 21:00 UTC
+    "ASIA":    (22, 7),
+    "LONDON":  (7, 12),
+    "OVERLAP": (12, 14),
+    "NY":      (14, 21),
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  WHALE / LIQUIDITY (Pillar 3)
+#  WHALE / LIQUIDITY
 # ─────────────────────────────────────────────────────────────────────────────
 
 WHALE_ENABLED: bool              = True
@@ -268,15 +199,13 @@ WHALE_SWEEP_REJECTION_PCT: float = 0.003
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  NEWS FILTER (Pillar 4)
+#  NEWS FILTER
 # ─────────────────────────────────────────────────────────────────────────────
 
 NEWS_API_URL: str                = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 NEWS_BLOCK_BEFORE_MINS: int      = 15
 NEWS_BLOCK_AFTER_MINS: int       = 15
 NEWS_HIGH_IMPACT_ONLY: bool      = True
-
-# Gold-specific medium-impact news blocking (XAUUSD is uniquely sensitive)
 NEWS_GOLD_MEDIUM_IMPACT: bool = True
 NEWS_GOLD_SENSITIVE_EVENTS: List[str] = [
     "FOMC", "Fed", "CPI", "PPI", "NFP", "Non-Farm",
@@ -290,7 +219,7 @@ NEWS_GOLD_MEDIUM_BLOCK_AFTER_MINS: int = 10
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  VOLATILITY SIZING (Pillar 5)
+#  VOLATILITY SIZING — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
 VOLATILITY_SIZING_ENABLED: bool  = True
@@ -301,11 +230,11 @@ KELLY_ENABLED: bool              = True
 KELLY_MIN_TRADES: int            = 15
 KELLY_FRACTION: float            = 0.65
 KELLY_MAX_RISK_PCT: float        = 2.0
-RISK_PER_TRADE_PCT: float        = 0.75    # Prop-firm safe: $10K * 0.75% = $75 risk per trade
+RISK_PER_TRADE_PCT: float        = 0.75
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ALPHA RANKER (Pillar 6)
+#  ALPHA RANKER
 # ─────────────────────────────────────────────────────────────────────────────
 
 ALPHA_RANKER_ENABLED: bool       = True
@@ -315,25 +244,20 @@ ALPHA_S_TIER_WR: float           = 0.65
 ALPHA_A_TIER_WR: float           = 0.55
 ALPHA_B_TIER_WR: float           = 0.45
 ALPHA_C_TIER_WR: float           = 0.20
-ALPHA_VETO_WR: float             = 0.35   # v4.4: Hard veto -- sources below 35% Bayesian WR with negative PnL are blocked
-ALPHA_VETO_MIN_TRADES: int       = 10     # minimum trades before veto can apply
+ALPHA_VETO_WR: float             = 0.35
+ALPHA_VETO_MIN_TRADES: int       = 10
 ALPHA_F_MUTE_BELOW: float        = 0.10
-
-# Bayesian shrinkage prior (Beta-Binomial conjugate)
-# Prior weight = PRIOR_ALPHA + PRIOR_BETA pseudo-observations centered at PRIOR_ALPHA/(PRIOR_ALPHA+PRIOR_BETA)
-ALPHA_BAYESIAN_PRIOR_ALPHA: float = 3.0   # pseudo-wins  (prior mean = 3/(3+3) = 50%)
-ALPHA_BAYESIAN_PRIOR_BETA: float  = 3.0   # pseudo-losses
-ALPHA_TOXIC_MIN_TRADES: int       = 15    # minimum trades before a source can be classified TOXIC
-ALPHA_TOXIC_WR_THRESHOLD: float   = 0.10  # WR below this WITH enough trades = truly toxic (hard block)
-
-# AI Confidence Override: allows high-conviction AI signals to bypass low-tier muting
-AI_OVERRIDE_MIN_CONFIDENCE: int    = 9    # minimum AI confidence to trigger override
-AI_OVERRIDE_FLOOR_CONF_9: float    = 0.40 # effective multiplier floor when AI says 9/10
-AI_OVERRIDE_FLOOR_CONF_10: float   = 0.50 # effective multiplier floor when AI says 10/10
+ALPHA_BAYESIAN_PRIOR_ALPHA: float = 3.0
+ALPHA_BAYESIAN_PRIOR_BETA: float  = 3.0
+ALPHA_TOXIC_MIN_TRADES: int       = 15
+ALPHA_TOXIC_WR_THRESHOLD: float   = 0.10
+AI_OVERRIDE_MIN_CONFIDENCE: int    = 9
+AI_OVERRIDE_FLOOR_CONF_9: float    = 0.40
+AI_OVERRIDE_FLOOR_CONF_10: float   = 0.50
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STATE RECOVERY (Pillar 7)
+#  STATE RECOVERY
 # ─────────────────────────────────────────────────────────────────────────────
 
 RECOVERY_ENABLED: bool           = True
@@ -342,7 +266,7 @@ RECOVERY_HEARTBEAT_SECS: int     = 60
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  EXECUTION (Pillar 8)
+#  EXECUTION — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
 MT5_LOGIN: int              = int(os.getenv("MT5_LOGIN", "0"))
@@ -358,27 +282,21 @@ EXEC_PARTIAL_FILL_MIN_PCT: float = 0.80
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ██████  ML DATA PIPELINE — PILLAR 4  ██████
-#  These control what gets recorded on every bar analysis.
-#  Every parameter here feeds directly into the TFT training dataset.
+#  ML DATA PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-ML_FEATURE_RECORDING_ENABLED: bool = True     # Master switch for market_features table
-ML_FEATURE_TIMEFRAMES: List[str]   = ["M15", "H1", "H4"]  # Record features at all 3 TFs
-ML_HURST_LOOKBACKS: List[int]      = [50, 100]             # Two Hurst windows
-ML_REALIZED_VAR_WINDOW: int        = 12        # bars for realized variance computation
-ML_HAR_RV_ENABLED: bool            = True      # Compute HAR-RV volatility forecast
-
-# Dollar bar aggregation (Pillar 5 paradigm shift)
-ML_DOLLAR_BARS_ENABLED: bool       = False# Set True when tick data collection ready
-ML_DOLLAR_BAR_SIZE_USD: float      = 50_000_000  # $50M per bar for XAUUSD
-
-# Label backfill: how far forward to look for TP/SL outcome labeling
-ML_LABEL_LOOKFORWARD_BARS: int     = 30        # bars to wait for label (M15 = 7.5 hours)
+ML_FEATURE_RECORDING_ENABLED: bool = True
+ML_FEATURE_TIMEFRAMES: List[str]   = ["M15", "H1", "H4"]
+ML_HURST_LOOKBACKS: List[int]      = [50, 100]
+ML_REALIZED_VAR_WINDOW: int        = 12
+ML_HAR_RV_ENABLED: bool            = True
+ML_DOLLAR_BARS_ENABLED: bool       = False
+ML_DOLLAR_BAR_SIZE_USD: float      = 50_000_000
+ML_LABEL_LOOKFORWARD_BARS: int     = 30
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  BACKTESTING (Pillar 9)
+#  BACKTESTING
 # ─────────────────────────────────────────────────────────────────────────────
 
 BACKTEST_DATA_DIR: str           = "data/historical"
@@ -387,7 +305,7 @@ BACKTEST_COMMISSION_PER_LOT: float = 7.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  EXPOSURE GUARD (Pillar 11)
+#  EXPOSURE GUARD — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
 CORRELATION_GROUPS: List[List[str]] = [
@@ -399,12 +317,12 @@ CORRELATION_GROUPS: List[List[str]] = [
 MAX_CURRENCY_EXPOSURE_PCT: float  = 5.0
 MAX_CONCURRENT_TRADES: int        = 10
 VIP_OVERFLOW_SLOTS: int           = 2
-MAX_CONCURRENT_PER_SYMBOL: int    = 1
+MAX_CONCURRENT_PER_SYMBOL: int    = 2
 MAX_TOTAL_LOTS: float             = 0.50
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  BLACK BOX (Pillar 12)
+#  BLACK BOX
 # ─────────────────────────────────────────────────────────────────────────────
 
 BLACK_BOX_ENABLED: bool      = True
@@ -413,7 +331,7 @@ DATA_DIR: str               = "data"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LATENCY MONITOR (Pillar 13)
+#  LATENCY MONITOR
 # ─────────────────────────────────────────────────────────────────────────────
 
 LATENCY_ENABLED: bool              = True
@@ -426,7 +344,7 @@ LATENCY_BROKER_HOST: str           = os.getenv("LATENCY_BROKER_HOST", "trade.icm
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  TRADE MANAGEMENT
+#  TRADE MANAGEMENT — SAME AS MARCH 17
 # ─────────────────────────────────────────────────────────────────────────────
 
 SIGNAL_EXPIRY_MINUTES: int           = 5
@@ -435,10 +353,9 @@ TP1_CLOSE_PCT: float                 = 0.34
 TP2_CLOSE_PCT: float                 = 0.33
 TRAILING_STOP_ACTIVATION_PIPS: float = 35.0
 TRAILING_STOP_STEP_PIPS: float       = 12.0
-MAX_ENTRY_DEVIATION_PIPS: float      = 50.0
+MAX_ENTRY_DEVIATION_PIPS: float      = 80.0   # v7.1: was 150 (too loose), 50 (too tight)
 CONSENSUS_WINDOW_MINUTES: int        = 15
 CONSENSUS_MIN_SOURCES: int           = 2
-# v4.0 Profit Maximizer
 PYRAMID_ENABLED: bool                = True
 PYRAMID_ADD_PCT: float               = 0.25
 STALE_EXIT_MINUTES: int              = 30
@@ -453,10 +370,11 @@ TIGHT_SL_ATR_RATIO: float = 0.65
 TIGHT_SL_LOT_MULTIPLIER: float = 0.60
 RAPID_REPEAT_COOLDOWN_SECS: int = 900
 RAPID_REPEAT_LOT_MULTIPLIER: float = 0.50
+
 # v6.2: CHOP REGIME FILTER
 CHOP_FILTER_ENABLED: bool          = True
-CHOP_BLOCK_THRESHOLD: float        = 0.35
-CHOP_WARN_THRESHOLD: float         = 0.50
+CHOP_BLOCK_THRESHOLD: float        = 0.45    # v8.1: tightened from 0.35
+CHOP_WARN_THRESHOLD: float         = 0.55    # v8.1: tightened from 0.50
 CHOP_WARN_LOT_MULTIPLIER: float    = 0.50
 
 # v6.2: Session-Level Loss Dampener
@@ -465,14 +383,13 @@ SESSION_SINGLE_LOSS_THRESHOLD: float = 50.0
 SESSION_LOSS_LOT_REDUCTION: float   = 0.50
 SESSION_LOSS_DAMPENER_DURATION_SECS: int = 3600
 
-# v6.2: BE-as-Neutral threshold
+# v6.2: Misc
 BE_NEUTRAL_PNL_THRESHOLD: float     = 3.0
 VIP_MIN_LOT: float                   = 0.03
 SESSION_BLACKOUT_START_UTC: int      = 99
 SESSION_BLACKOUT_END_UTC: int        = 13
 GLOBAL_BIAS_KILL_THRESHOLD: float    = 0.60
 MAX_RR_MULTIPLIER: float             = 2.5
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -485,11 +402,71 @@ NOTIFY_ON_TRADE_OPEN: bool  = True
 NOTIFY_ON_TRADE_CLOSE: bool = True
 NOTIFY_ON_HALT: bool        = True
 
-# ?????????????????????????????????????????????????????????????????????????????
-#  ADAPTIVE TRADE ORCHESTRATOR (ATO) ? v5.0
-# ?????????????????????????????????????????????????????????????????????????????
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ADAPTIVE TRADE ORCHESTRATOR
+# ─────────────────────────────────────────────────────────────────────────────
 
 ATO_ENABLED: bool = True
-# v6.2.1: SCANNER VALIDATION MODE — ALL AUTO SCANNERS DISABLED
-# Remove ONLY after validate/02_run_validation.py confirms positive expectancy
-SCANNERS_DISABLED = False
+
+# v6.2.1: REMOVED — was blocking all scanners
+# SCANNERS_DISABLED = True   # <-- DO NOT RE-ADD
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  v6.3.1: RESTORED MARCH 17 SYSTEM + BUG FIXES
+#  Scanners: FULLY ENABLED (same as March 17)
+#  Anti-Hedge: prevents BUY+SELL same symbol (the only new safety feature)
+#  Dampener Floor: prevents lot sizes from being crushed to 0.01
+#  Bug fixes are in risk_guard.py and main.py, not here
+# ─────────────────────────────────────────────────────────────────────────────
+
+SCANNER_SIGNALS_ENABLED = True     # Scanners CAN trade (same as March 17)
+TELEGRAM_BOOST_MODE = False        # Not needed — full system active
+ANTI_HEDGE_ENABLED = True          # NEW: prevents hedge disaster
+
+# v6.3.1 FIX: Dampener lot floor — prevents March 23 problem
+# When multiple dampeners stack (chop × session × slope × tight_SL),
+# they can multiply down to 0.01 lots. This floor prevents that.
+DAMPENER_LOT_FLOOR: float = 0.03
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  v6.4: Quality Over Quantity
+# ─────────────────────────────────────────────────────────────────────────────
+
+SOLO_PULLBACK_REQUIRE_CONSENSUS: bool = True
+CATCD_MIN_SOLO_CONFIDENCE: int = 8
+MIN_RR_SCANNER: float = 1.3
+
+
+# ---------------------------------------------------------------------------
+#  v7.0: Convergence Sniper
+# ---------------------------------------------------------------------------
+
+MIN_TRADE_GAP_MINUTES: int = 2        # Cooldown between trades (rapid-fire lost -$561)
+MAX_HOLD_MINUTES: int = 45            # Hard time kill (>4hr trades lost -$699)
+MAX_SINGLE_TRADE_LOTS: float = 0.03   # Hard lot cap (0.01 is only profitable tier)
+
+# v7.2: Quick wins
+CLUSTER_WINDOW_MINUTES: int = 10       # Cluster boost window for crowd consensus
+
+# v8.0: Profit Machine
+TIER_S_CHANNELS = {-1002223574325, -1001785197109}  # 100% WR elite channels
+
+# v8.0: Lead channel classification from deep research
+LEAD_CHANNELS = {
+    -1002223574325,   # #1 LEADING, +1078 pips post-signal
+    -1003715078909,   # LEADING, +634 pips post-signal
+    -1002448604508,   # LEADING, +904 pips post-signal
+    -1003655941757,   # LEADING, +742 pips post-signal
+}
+
+
+
+# ---------------------------------------------------------------------------
+#  v8.2: Breakout Hunter
+# ---------------------------------------------------------------------------
+
+BREAKOUT_MIN_CONSECUTIVE_BARS: int = 3
+BREAKOUT_VOLUME_SPIKE_MULT: float  = 1.5
+BREAKOUT_MAX_CONCURRENT: int       = 2     # Allow stacking during breakout
+BREAKOUT_COOLDOWN_MINUTES: int     = 1     # Fast entries during breakout

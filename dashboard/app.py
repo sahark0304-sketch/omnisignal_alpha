@@ -223,7 +223,7 @@ if page == "📊 Overview":
                 FROM signals ORDER BY received_at DESC LIMIT 50
             """).fetchall()
         if rows:
-            df_s = pd.DataFrame([dict(r) for r in rows])
+            df_s = pd.DataFrame([{k: r[k] for k in r.keys()} for r in rows])
             df_s["received_at"] = pd.to_datetime(df_s["received_at"]).dt.strftime("%H:%M:%S")
             df_s["status"]   = df_s["status"].apply(lambda s: f"{emoji.get(s,'?')} {s}")
             df_s["HC"]       = df_s["is_high_conviction"].apply(lambda x: "🔥" if x else "")
@@ -600,7 +600,7 @@ elif page == "🌡 Exposure":
                 "SELECT ts, avg_ms, jitter_ms, mode FROM latency_log ORDER BY ts DESC LIMIT 50"
             ).fetchall()
         if lat_rows:
-            df_lat = pd.DataFrame([dict(r) for r in lat_rows])
+            df_lat = pd.DataFrame([{k: r[k] for k in r.keys()} for r in lat_rows])
             df_lat["ts"] = pd.to_datetime(df_lat["ts"])
             st.dataframe(df_lat, use_container_width=True, hide_index=True)
             st.line_chart(df_lat.set_index("ts")[["avg_ms","jitter_ms"]])
@@ -654,7 +654,7 @@ elif page == "⚙️ Self-Correction":
                     "SELECT ts, event_type, details FROM audit_log ORDER BY ts DESC LIMIT 30"
                 ).fetchall()
             if rows:
-                df_a = pd.DataFrame([dict(r) for r in rows])
+                df_a = pd.DataFrame([{k: r[k] for k in r.keys()} for r in rows])
                 df_a["ts"] = pd.to_datetime(df_a["ts"]).dt.strftime("%H:%M:%S")
                 st.dataframe(df_a, use_container_width=True, hide_index=True)
         except Exception as e:

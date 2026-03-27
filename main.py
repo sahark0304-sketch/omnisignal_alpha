@@ -1,24 +1,15 @@
-"""
-main.py — OmniSignal Alpha v3.0
-Phase 1 (Prop Firm Survival) + Pillar 4 (ML Data Pipeline) — Full Orchestrator
+﻿"""
+main.py — OmniSignal Alpha v6.3.1
+RESTORED March 17 Architecture + Bug 1 Fix (Lot Ceiling)
 
-NEW vs v2.0:
-  + continuous_equity_monitor() — Bug-4 fix: 5-second equity checks
-  + daily_reset_watcher()       — Bug-3 fix: locks opening equity at server midnight
-  + Confluence called BEFORE risk_guard, result passed in (avoids double computation)
-  + Feature row ID tracked through pipeline for label backfilling
-  + trade_manager extended to trigger label backfill on trade close
-  + Opening equity set on first startup of each trading day
-  + PROP_FIRM_PHASE logged on every trade
-
-SIGNAL PIPELINE:
-  RawSignal → Dedup → Noise Gate → AI Parse → Vision
-  → Black Box trace init
-  → Confluence + Feature Recording (once)
-  → Risk Guard (receives ConfluenceResult, no duplicate MT5 calls)
-  → Execution
-  → DB linkage (signal_id ↔ trade_ticket ↔ feature_row_id)
-  → Black Box save
+v6.3.1: This is the March 17 system that produced +$310/day with the
+following fixes:
+  + Bug 1 FIX: Post-risk boosts cannot exceed 2x of risk_guard output
+    (was: dampened 0.02 × amp × convex = 0.08 — ceiling violated)
+  + Bug 2 FIX: created_at column in market_features (run migration)
+  + Bug 3 FIX: reset_halt.py writes to daily_snapshots (run reset_halt)
+  + Anti-hedge in risk_guard.validate() prevents BUY+SELL same symbol
+  + Dampener floor in risk_guard prevents lots crushed to 0.01
 """
 
 import asyncio
@@ -63,10 +54,10 @@ from quant.macro_filter import macro_filter
 from recovery.state_recovery import reconcile_on_startup, run_heartbeat
 from quant.smc_scanner import smc_scanner
 from quant.shadow_ledger import shadow_ledger
+from quant.breakout_hunter import breakout_hunter
 from quant.prop_firm_finisher import prop_firm_finisher
 import config
 
-# v5.0: Adaptive Trade Orchestrator
 try:
     from quant.trade_orchestrator import trade_orchestrator, run_orchestrator_monitor
     _ato_available = True
@@ -77,7 +68,6 @@ logger = get_logger("main")
 
 
 async def _supervise(name: str, coro_fn, restart_delay: int = 15):
-    """Auto-restart wrapper. If a background task crashes, log and restart it."""
     while True:
         try:
             await coro_fn()
@@ -94,19 +84,10 @@ async def _supervise(name: str, coro_fn, restart_delay: int = 15):
             await asyncio.sleep(restart_delay)
 
 
-# Maps feature_row_id → (signal_id, trade_ticket) for label backfilling
-# Persisted in memory; trade_manager will call backfill_labels when positions close
-_pending_labels: dict = {}   # {trade_ticket: {"feature_row_id": int, "signal_id": int,
-                              #                  "entry": float, "tp1": float, "sl": float,
-                              #                  "open_bar_ts": datetime}}
+_pending_labels: dict = {}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  BACKGROUND TASKS
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def equity_snapshot_loop():
-    """Write equity snapshot every 5 minutes for dashboard equity curve."""
     while True:
         try:
             loop   = asyncio.get_event_loop()
@@ -115,7 +96,6 @@ async def equity_snapshot_loop():
             open_cnt = len(await loop.run_in_executor(None, mt5_executor.get_all_positions))
             daily_pnl = db_manager.get_daily_pnl()
             db_manager.insert_equity_snapshot(equity, balance, open_cnt, daily_pnl)
-            # Also keep HWM updated
             db_manager.update_high_water_mark(equity)
         except Exception as e:
             logger.debug(f"[Main] Equity snapshot error: {e}")
@@ -123,10 +103,6 @@ async def equity_snapshot_loop():
 
 
 async def _ensure_opening_equity_set():
-    """
-    Ensures opening equity is recorded for today.
-    Called at startup and by daily_reset_watcher.
-    """
     today_key = db_manager._get_daily_key()
     existing  = db_manager.get_opening_equity(today_key)
     if existing is None:
@@ -138,76 +114,43 @@ async def _ensure_opening_equity_set():
         logger.info(f"[Main] Opening equity already set: ${existing:,.2f} ({today_key})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ML LABEL BACKFILL
-#  Called when a trade closes — connects feature row to outcome
-# ─────────────────────────────────────────────────────────────────────────────
-
 def register_pending_label(
-    trade_ticket: int,
-    feature_row_id: int,
-    signal_id: int,
-    entry: float,
-    tp1: float,
-    sl: float,
-    symbol: str = "",
-    action: str = "",
+    trade_ticket: int, feature_row_id: int, signal_id: int,
+    entry: float, tp1: float, sl: float, symbol: str = "", action: str = "",
 ):
-    """Register a trade for label backfilling when it closes."""
     if feature_row_id > 0:
         _pending_labels[trade_ticket] = {
-            "feature_row_id": feature_row_id,
-            "signal_id":      signal_id,
-            "entry":          entry,
-            "tp1":            tp1,
-            "sl":             sl,
-            "symbol":         symbol,
-            "action":         action,
-            "open_bar_ts":    datetime.now(),
+            "feature_row_id": feature_row_id, "signal_id": signal_id,
+            "entry": entry, "tp1": tp1, "sl": sl,
+            "symbol": symbol, "action": action,
+            "open_bar_ts": datetime.now(),
         }
 
 
-def backfill_trade_label(
-    trade_ticket: int,
-    close_price: float,
-    pnl: float,
-    tp1_hit: bool,
-    pip_size: float,
-):
-    """Called by trade_manager when a position closes. Backfills ML labels."""
+def backfill_trade_label(trade_ticket: int, close_price: float, pnl: float, tp1_hit: bool, pip_size: float):
     pending = _pending_labels.pop(trade_ticket, None)
     if pending is None:
         return
-
     feature_row_id = pending["feature_row_id"]
     signal_id      = pending["signal_id"]
     entry          = pending["entry"] or close_price
     tp1            = pending["tp1"]
     sl             = pending["sl"] or close_price
     open_ts        = pending["open_bar_ts"]
-
     sl_hit     = not tp1_hit
     pips_pnl   = (close_price - entry) / pip_size if pip_size > 0 else 0.0
-    bars_held  = int((datetime.now() - open_ts).total_seconds() / (15 * 60))  # M15 bars
+    bars_held  = int((datetime.now() - open_ts).total_seconds() / (15 * 60))
     risk_pips  = abs(entry - sl) / pip_size if (sl and pip_size > 0) else 1.0
     pnl_r      = pips_pnl / risk_pips if risk_pips > 0 else 0.0
-
     db_manager.backfill_feature_label(
-        feature_row_id = feature_row_id,
-        signal_id      = signal_id,
-        trade_ticket   = trade_ticket,
-        tp1_hit        = tp1_hit,
-        sl_hit         = sl_hit,
-        pips_pnl       = pips_pnl,
-        bars_held      = bars_held,
-        pnl_r          = pnl_r,
+        feature_row_id=feature_row_id, signal_id=signal_id,
+        trade_ticket=trade_ticket, tp1_hit=tp1_hit, sl_hit=sl_hit,
+        pips_pnl=pips_pnl, bars_held=bars_held, pnl_r=pnl_r,
     )
     logger.debug(
         f"[Main] Label backfilled | Ticket:{trade_ticket} "
         f"TP1={tp1_hit} R={pnl_r:.2f} pips={pips_pnl:.1f}"
     )
-
-    # Post-trade forensic feedback (v4.0)
     symbol = pending.get("symbol", "")
     action = pending.get("action", "")
     if symbol and action:
@@ -216,30 +159,21 @@ def backfill_trade_label(
         ))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  MANAGEMENT ACTION HANDLER
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def handle_management_action(signal: ParsedSignal):
     from mt5_executor.mt5_executor import get_all_positions, modify_sl, close_partial
-
     positions = get_all_positions()
     matching  = [p for p in positions if (not signal.symbol or p["symbol"] == signal.symbol)]
-
     if not matching:
         logger.info(f"[Main] MGMT {signal.action} — no matching positions for {signal.symbol}")
         return
-
     if signal.action == "CLOSE":
         for pos in matching:
             close_partial(pos["ticket"], pos["volume"])
             logger.info(f"[Main] CLOSE: ticket {pos['ticket']}")
-
     elif signal.action == "UPDATE" and signal.stop_loss:
         for pos in matching:
             modify_sl(pos["ticket"], signal.stop_loss)
             logger.info(f"[Main] UPDATE SL: ticket {pos['ticket']} → {signal.stop_loss}")
-
     elif signal.action == "CANCEL":
         import MetaTrader5 as mt5
         orders = mt5.orders_get(symbol=signal.symbol)
@@ -247,27 +181,20 @@ async def handle_management_action(signal: ParsedSignal):
             for order in orders:
                 mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket})
                 logger.info(f"[Main] CANCEL pending order {order.ticket}")
-
     db_manager.log_audit(f"MGMT_{signal.action}", {
         "symbol": signal.symbol, "source": signal.raw_source
     })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CORE SIGNAL PROCESSOR
+#  CORE SIGNAL PROCESSOR — Same as March 17 + Bug 1 lot ceiling fix
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def process_signal(raw: RawSignal):
-    """
-    Full v3.0 pipeline:
-    Dedup → AI Gate → Parse → Vision → Confluence+Features → Risk → Execute → Label
-    """
 
-    # ── Age check ─────────────────────────────────────────────────────────────
     if datetime.now() - raw.received_at > timedelta(minutes=config.SIGNAL_EXPIRY_MINUTES):
         return
 
-    # ── Dedup ─────────────────────────────────────────────────────────────────
     if raw.content and db_manager.is_duplicate_message(raw.source, raw.content):
         return
     if raw.content:
@@ -275,10 +202,8 @@ async def process_signal(raw: RawSignal):
 
     logger.info(f"[Main] Processing: '{raw.content[:80]}' from {raw.source}")
 
-    # ── Black Box trace init ──────────────────────────────────────────────────
     trace = DecisionTrace(source=raw.source, raw_message=raw.content or "")
 
-    # ── AI parse (Pillars 1 & 14) ─────────────────────────────────────────────
     signal: ParsedSignal = await parse_text_signal(raw.content, raw.source)
     trace.set_ai_gate(signal.action if signal else "NOISE")
 
@@ -298,10 +223,8 @@ async def process_signal(raw: RawSignal):
 
     trace.set_ai_parse(signal)
 
-    # ── Session + instrument check ────────────────────────────────────────────
     session = get_current_session()
 
-    # ── Store signal in DB ────────────────────────────────────────────────────
     signal_id = db_manager.insert_signal(
         source=raw.source, raw_text=raw.content,
         parsed={
@@ -319,7 +242,6 @@ async def process_signal(raw: RawSignal):
         trace.save()
         return
 
-    # ── Register in Signal Amplifier for multi-source confluence boost ──
     entry_for_amp = signal.entry_price or 0.0
     signal_amplifier.register_signal(
         source=raw.source, action=signal.action,
@@ -327,12 +249,10 @@ async def process_signal(raw: RawSignal):
         metadata={"confidence": signal.confidence, "signal_id": signal_id},
     )
 
-    # ── Consensus check ───────────────────────────────────────────────────────
     is_high_conviction = consensus_engine.add_and_check(signal)
     if is_high_conviction:
         db_manager.update_signal_conviction(signal_id, True)
 
-    # ── Live MT5 prices ───────────────────────────────────────────────────────
     loop = asyncio.get_event_loop()
     bid, ask, spread = await loop.run_in_executor(
         None, lambda: mt5_executor.get_current_prices(signal.symbol)
@@ -343,13 +263,10 @@ async def process_signal(raw: RawSignal):
         trace.save()
         return
 
-    # Bug-1 fix: equity from MT5 includes floating P&L
     equity       = await loop.run_in_executor(None, mt5_executor.get_account_equity)
     pip_size     = await loop.run_in_executor(None, lambda: mt5_executor.get_pip_size(signal.symbol))
     pip_value    = await loop.run_in_executor(None, lambda: mt5_executor.get_pip_value_per_lot(signal.symbol))
 
-    # ── CONFLUENCE + FEATURE RECORDING (once — not duplicated in risk_guard) ──
-    # Pass signal_id so features row can be linked to this signal
     entry_price = signal.entry_price or (ask if signal.action == "BUY" else bid)
     confluence = await check_confluence(
         symbol             = signal.symbol,
@@ -359,12 +276,10 @@ async def process_signal(raw: RawSignal):
         current_spread_pips = spread,
         signal_id          = signal_id,
     )
-    # Update DB signal with Hurst
     db_manager.set_system_state(
         f"hurst_{signal.symbol}", str(round(confluence.hurst_50, 4))
     )
 
-    # ── Risk validation (receives pre-computed confluence — no double MT5 calls) ─
     approved, reason, order = await risk_guard.validate(
         signal             = signal,
         current_bid        = bid,
@@ -374,7 +289,7 @@ async def process_signal(raw: RawSignal):
         is_high_conviction = is_high_conviction,
         pip_size           = pip_size,
         pip_value_per_lot  = pip_value,
-        confluence_result  = confluence,    # ← passed in, not recomputed
+        confluence_result  = confluence,
         trace              = trace,
     )
 
@@ -382,8 +297,6 @@ async def process_signal(raw: RawSignal):
         db_manager.update_signal_status(signal_id, "REJECTED", reason)
         trace.set_execution("REJECTED")
         trace.save()
-
-        # v5.0: Record rejection in ATO
         if _ato_available:
             _stage = reason.split(":")[0][:30] if ":" in reason else reason[:30]
             trade_orchestrator.record_rejection(
@@ -393,60 +306,56 @@ async def process_signal(raw: RawSignal):
             )
         return
 
-    # ── Signal Amplifier boost (multi-source confluence) ──────────────
-    # v6.2.1: Block boosts for unvalidated AUTO signals. Telegram signals proceed normally.
-    _validated_scanners = {"AUTO_SMC", "AUTO_SCANNER"}
-    _skip_boosts = signal.raw_source.startswith("AUTO_") and signal.raw_source not in _validated_scanners
-    if _skip_boosts:
+    # ── Signal Amplifier + Institutional Scaling ──────────────────────────────
+    # v6.3.1 Bug 1 FIX: Store risk_guard output as ceiling.
+    # Post-risk boosts can amplify up to 2x of this ceiling, not unlimited.
+    _riskguard_lot_ceiling = order.lot_size
+    _dd_mode = getattr(order, 'dd_mode', 'NORMAL')
+    _dampeners_active = _dd_mode == "REDUCED" or _riskguard_lot_ceiling < 0.04
+
+    amp_boost, amp_n, amp_sources = signal_amplifier.get_confluence_boost(
+        action=signal.action, symbol=signal.symbol
+    )
+
+    has_convergence = signal.raw_source == "AUTO_CONVERGENCE" or amp_n >= 2
+    consensus_score = 0
+    try:
+        from quant.convergence_engine import convergence_engine
+        cs = convergence_engine.get_consensus_score()
+        consensus_score = cs.get("score", 0)
+    except Exception:
+        pass
+
+    convex_boost, convex_reason = compute_institutional_scaling(
+        signal_confidence=signal.confidence,
+        current_equity=equity,
+        source=signal.raw_source,
+        has_convergence=has_convergence,
+        consensus_score=consensus_score,
+    )
+
+    # v6.3.1 Bug 1 FIX: Block ALL boosts when dampeners are active
+    if _dampeners_active:
         logger.info(
-            "[Main] Skipping boosts for unvalidated source: %s", signal.raw_source,
+            "[Main] BOOST BLOCKED: dampeners active (lots=%.2f dd=%s) "
+            "— amp=%.1fx convex=%.2fx suppressed",
+            _riskguard_lot_ceiling, _dd_mode, amp_boost, convex_boost,
         )
     else:
-        _riskguard_lot_ceiling = order.lot_size
-        _dd_mode = getattr(order, 'dd_mode', 'NORMAL')
-        _dampeners_active = _dd_mode == "REDUCED" or _riskguard_lot_ceiling < 0.04
-
-        amp_boost, amp_n, amp_sources = signal_amplifier.get_confluence_boost(
-            action=signal.action, symbol=signal.symbol
-        )
-
-        has_convergence = signal.raw_source == "AUTO_CONVERGENCE" or amp_n >= 2
-        consensus_score = 0
-        try:
-            from quant.convergence_engine import convergence_engine
-            cs = convergence_engine.get_consensus_score()
-            consensus_score = cs.get("score", 0)
-        except Exception:
-            pass
-
-        convex_boost, convex_reason = compute_institutional_scaling(
-            signal_confidence=signal.confidence,
-            current_equity=equity,
-            source=signal.raw_source,
-            has_convergence=has_convergence,
-            consensus_score=consensus_score,
-        )
-
-        if _dampeners_active:
+        combined_boost = amp_boost * convex_boost
+        if combined_boost > 1.0:
+            # Cap at 2x of risk_guard output — prevents ceiling violation
+            _boosted = round(min(order.lot_size * combined_boost, _riskguard_lot_ceiling * 2.0), 2)
+            order.lot_size = _boosted
+            order.alpha_multiplier *= combined_boost
             logger.info(
-                "[Main] BOOST BLOCKED: dampeners active (lots=%.2f dd=%s) "
-                "— amp=%.1fx convex=%.2fx suppressed",
-                _riskguard_lot_ceiling, _dd_mode, amp_boost, convex_boost,
+                "[Main] v4.2 Scaling: amp=%.1fx convex=%.2fx combined=%.2fx "
+                "consensus=%d | lots=%.2f (cap=%.2f)",
+                amp_boost, convex_boost, combined_boost,
+                consensus_score, order.lot_size, _riskguard_lot_ceiling * 2.0,
             )
-        else:
-            combined_boost = amp_boost * convex_boost
-            if combined_boost > 1.0:
-                _boosted = round(min(order.lot_size * combined_boost, _riskguard_lot_ceiling * 2.0), 2)
-                order.lot_size = _boosted
-                order.alpha_multiplier *= combined_boost
-                logger.info(
-                    "[Main] v4.2 Scaling: amp=%.1fx convex=%.2fx combined=%.2fx "
-                    "consensus=%d | lots=%.2f (cap=%.2f)",
-                    amp_boost, convex_boost, combined_boost,
-                    consensus_score, order.lot_size, _riskguard_lot_ceiling * 2.0,
-                )
 
-    # ── PRE-REGISTER DEDUP (before order to prevent race condition) ──
+    # ── PRE-REGISTER DEDUP ────────────────────────────────────────────────────
     register_execution(signal.symbol, signal.action)
 
     # ── Execute ───────────────────────────────────────────────────────────────
@@ -460,14 +369,12 @@ async def process_signal(raw: RawSignal):
 
     if ticket:
         db_manager.update_signal_status(signal_id, "EXECUTED", trade_ticket=ticket)
-        # Patch signal_id onto trade
         with db_manager.get_connection() as conn:
             conn.execute(
                 "UPDATE trades SET signal_id=? WHERE ticket=?",
                 (signal_id, ticket)
             )
 
-        # Register for ML label backfilling when trade closes
         register_pending_label(
             trade_ticket   = ticket,
             feature_row_id = confluence.feature_row_id,
@@ -479,7 +386,6 @@ async def process_signal(raw: RawSignal):
             action         = signal.action,
         )
 
-        # Link feature row to ticket in DB too
         if confluence.feature_row_id > 0:
             with db_manager.get_connection() as conn:
                 conn.execute(
@@ -515,7 +421,6 @@ async def process_signal(raw: RawSignal):
             f"Source: `{signal.raw_source}` | Tier: `{order.alpha_tier}`{tox_tag}"
         )
 
-        # v5.0: Record execution in ATO
         if _ato_available:
             trade_orchestrator.record_execution(
                 source=raw.source, symbol=signal.symbol,
@@ -527,10 +432,6 @@ async def process_signal(raw: RawSignal):
 
     trace.save()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  QUEUE CONSUMER
-# ─────────────────────────────────────────────────────────────────────────────
 
 async def queue_consumer():
     logger.info("[Main] Queue consumer started.")
@@ -550,46 +451,36 @@ async def queue_consumer():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STARTUP
+#  STARTUP — Same as March 17
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def daily_sentiment_loop():
-    """Send a daily trading sentiment summary to Telegram every 4 hours."""
     from utils.notifier import notify
     import MetaTrader5 as mt5
 
     while True:
         try:
-            await asyncio.sleep(14400)  # 4 hours
-
+            await asyncio.sleep(14400)
             equity = mt5_executor.get_account_equity()
             balance = mt5_executor.get_account_balance()
             opening_eq = db_manager.get_opening_equity() or balance
-
             daily_pnl = equity - opening_eq
             daily_pct = (daily_pnl / opening_eq * 100) if opening_eq > 0 else 0
-
-            today_trades = db_manager.get_daily_pnl_details() if hasattr(db_manager, "get_daily_pnl_details") else None
 
             import sqlite3
             db = sqlite3.connect("data/omnisignal.db")
             db.row_factory = sqlite3.Row
             from datetime import date
             today = date.today().isoformat()
-
             stats = db.execute("""
                 SELECT COUNT(*) as total,
                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                        SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
-                       SUM(pnl) as total_pnl,
-                       MAX(pnl) as best,
-                       MIN(pnl) as worst
+                       SUM(pnl) as total_pnl, MAX(pnl) as best, MIN(pnl) as worst
                 FROM trades
                 WHERE CAST(open_time AS TEXT) LIKE ? AND status = 'CLOSED'
             """, (today + "%",)).fetchone()
-
             open_count = len(db_manager.get_open_trades())
-
             total = stats["total"] or 0
             wins = stats["wins"] or 0
             losses = stats["losses"] or 0
@@ -597,17 +488,14 @@ async def daily_sentiment_loop():
             best = stats["best"] or 0
             worst = stats["worst"] or 0
             net = stats["total_pnl"] or 0
-
             if daily_pnl > 0:
                 mood = "\U0001f7e2 BULLISH"
             elif daily_pnl < -10:
                 mood = "\U0001f534 BEARISH"
             else:
                 mood = "\U0001f7e1 NEUTRAL"
-
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
-
             notify(
                 f"\U0001f4ca *Daily Summary*\n"
                 f"_{now.strftime('%Y-%m-%d %H:%M UTC')}_\n\n"
@@ -622,112 +510,85 @@ async def daily_sentiment_loop():
                 f"Net: `${net:+.2f}`\n\n"
                 f"Open Positions: `{open_count}`"
             )
-
             db.close()
-            logger.info(f"[Main] Daily sentiment sent: {mood} | PnL: ${daily_pnl:+.2f}")
-
         except Exception as e:
             logger.debug(f"[Main] Sentiment error: {e}")
 
 
-async def startup(): 
+async def startup():
     import os
     os.makedirs("data", exist_ok=True)
 
     logger.info("=" * 65)
-    logger.info("  OmniSignal Alpha v4.2 -- Total Alpha — Prop Firm Survival + ML + Macro v2")
+    logger.info("  OmniSignal Alpha v6.3.1 — RESTORED March 17 + Bug Fixes")
     logger.info(f"  Mode: {config.OPERATING_MODE} | Phase: {config.PROP_FIRM_PHASE}")
     logger.info(f"  Daily DD limit:  {config.DAILY_DRAWDOWN_LIMIT_PCT}% of opening equity")
     logger.info(f"  Max DD limit:    {config.MAX_DRAWDOWN_LIMIT_PCT}% from HWM")
     logger.info(f"  Initial balance: ${config.INITIAL_ACCOUNT_BALANCE:,.0f}")
     logger.info(f"  ML features:     {'ON' if config.ML_FEATURE_RECORDING_ENABLED else 'OFF'}")
-    logger.info("  Kelly Engine:    Active (Bayesian Kelly sizing + concave DD dampener)")
-    logger.info("  CATCD Engine:    Active (cross-asset tick correlation decay)")
-    logger.info("  TFI Engine:      Active (tick-level flow imbalance)")
-    logger.info("  Liquidity Scanner: Active (M1 liquidity sweep detector)")
-    logger.info("  Momentum Scanner: Active (M1 EMA pullback detection)")
-    logger.info("  Toxicity Monitor:  Active (tick-level adverse selection + signal inversion)")
-    logger.info("  AMD Engine:       Active (Accumulation-Manipulation-Distribution cycle)")
+    logger.info(f"  Anti-Hedge:      {'ON' if getattr(config, 'ANTI_HEDGE_ENABLED', False) else 'OFF'}")
+    logger.info(f"  Dampener Floor:  {getattr(config, 'DAMPENER_LOT_FLOOR', 0.03)}")
+    logger.info(f"  Scanners:        {'ENABLED' if getattr(config, 'SCANNER_SIGNALS_ENABLED', True) else 'DISABLED'}")
     logger.info("=" * 65)
 
-    # Init databases
     db_manager.init_db()
     init_black_box()
-
-    # Restore halt + DD mode
     risk_guard.sync_halt_from_db()
-
-    # Load self-correction prompt rules
     load_prompt_corrections()
 
-    # MT5 connection
     if not mt5_executor.connect():
         logger.critical("[Main] MT5 connection failed. Exiting.")
         try:
             from utils.notifier import notify
-            notify("🆘 *OmniSignal CRITICAL*\n\nMT5 connection FAILED. Bot has exited.\nCheck terminal login and restart.")
+            notify("🆘 *OmniSignal CRITICAL*\n\nMT5 connection FAILED. Bot has exited.")
         except Exception:
             pass
         sys.exit(1)
 
-    # Phase 1: Ensure opening equity is set for today (Bug-3 fix)
     await _ensure_opening_equity_set()
 
-    # Phase 1: Set initial HWM if not set
     if db_manager.get_high_water_mark() is None:
         eq = mt5_executor.get_account_equity()
         db_manager.update_high_water_mark(max(eq, config.INITIAL_ACCOUNT_BALANCE))
         logger.info(f"[Main] HWM initialized at ${max(eq, config.INITIAL_ACCOUNT_BALANCE):,.2f}")
 
-    # VPS crash recovery
     if config.RECOVERY_ENABLED:
         report = reconcile_on_startup()
         if report.get("crash_detected"):
             logger.warning(f"[Main] Recovery: {report}")
 
-    # Wire trade_manager with label backfill callback
     trade_manager.set_close_callback(backfill_trade_label)
 
-    # Macro data collection at startup (non-blocking)
     try:
         await update_macro_automatically()
     except Exception as e:
         logger.warning(f"[Main] Macro data collection skipped: {e}")
 
-    # Launch all background tasks
+    # ALL tasks — same as March 17
     tasks = [
-        asyncio.create_task(run_telegram_listener(),                                   name="telegram"),
-        asyncio.create_task(run_discord_listener(),                                    name="discord"),
-        asyncio.create_task(queue_consumer(),                                          name="queue"),
-        asyncio.create_task(trade_manager.run_management_loop(),                       name="trade_mgr"),
-        asyncio.create_task(run_heartbeat(),                                           name="heartbeat"),
-        asyncio.create_task(equity_snapshot_loop(),                                    name="equity_snap"),
-        asyncio.create_task(risk_guard.continuous_equity_monitor(),                    name="equity_monitor"),
-        asyncio.create_task(risk_guard.daily_reset_watcher(),                          name="daily_reset"),
-        asyncio.create_task(_supervise("shadow_ledger", shadow_ledger.run_monitor),    name="shadow_ledger"),
-        asyncio.create_task(_supervise("toxicity_monitor", toxicity_monitor.run),      name="toxicity_monitor"),
-        asyncio.create_task(_supervise("retry_queue", retry_queue.run),                name="retry_queue"),
-        asyncio.create_task(daily_sentiment_loop(),                                    name="sentiment"),
-        asyncio.create_task(nightly_optimization_loop(),                               name="nightly_ml"),
-        asyncio.create_task(macro_update_loop(),                                       name="macro_update"),
+        asyncio.create_task(run_telegram_listener(),                                        name="telegram"),
+        asyncio.create_task(run_discord_listener(),                                         name="discord"),
+        asyncio.create_task(queue_consumer(),                                               name="queue"),
+        asyncio.create_task(trade_manager.run_management_loop(),                            name="trade_mgr"),
+        asyncio.create_task(run_heartbeat(),                                                name="heartbeat"),
+        asyncio.create_task(equity_snapshot_loop(),                                         name="equity_snap"),
+        asyncio.create_task(risk_guard.continuous_equity_monitor(),                          name="equity_monitor"),
+        asyncio.create_task(risk_guard.daily_reset_watcher(),                               name="daily_reset"),
+        asyncio.create_task(_supervise("liquidity_scanner",  liquidity_scanner.run),         name="liquidity_scanner"),
+        asyncio.create_task(_supervise("momentum_scanner",   momentum_scanner.run),          name="momentum_scanner"),
+        asyncio.create_task(_supervise("tfi_engine",         tick_flow_engine.run),           name="tfi_engine"),
+        asyncio.create_task(_supervise("catcd",              catcd_engine.run),               name="catcd"),
+        asyncio.create_task(_supervise("mr_engine",          mr_engine.run),                  name="mr_engine"),
+        asyncio.create_task(_supervise("convergence",        convergence_engine.run),          name="convergence"),
+        asyncio.create_task(_supervise("breakout_guard",     breakout_guard.run),              name="breakout_guard"),
+        asyncio.create_task(_supervise("smc_scanner",        smc_scanner.run),                 name="smc_scanner"),
+        asyncio.create_task(_supervise("shadow_ledger",      shadow_ledger.run_monitor),       name="shadow_ledger"),
+        asyncio.create_task(_supervise("toxicity_monitor",  toxicity_monitor.run),            name="toxicity_monitor"),
+        asyncio.create_task(_supervise("retry_queue",        retry_queue.run),                name="retry_queue"),
+        asyncio.create_task(daily_sentiment_loop(),                                         name="sentiment"),
+        asyncio.create_task(nightly_optimization_loop(),                                      name="nightly_ml"),
+        asyncio.create_task(macro_update_loop(),                                              name="macro_update"),
     ]
-
-    if not getattr(config, "SCANNERS_DISABLED", False):
-        # v6.2.1: DISABLED — negative expectancy confirmed by backtest. Do not re-enable without validation.
-        tasks.extend([
-            asyncio.create_task(_supervise("liquidity_scanner", liquidity_scanner.run),  name="liquidity_scanner"),
-            # asyncio.create_task(_supervise("momentum_scanner", momentum_scanner.run),    name="momentum_scanner"),
-            # asyncio.create_task(_supervise("tfi_engine", tick_flow_engine.run),          name="tfi_engine"),
-            # asyncio.create_task(_supervise("catcd", catcd_engine.run),                   name="catcd"),
-            # asyncio.create_task(_supervise("mr_engine", mr_engine.run),                  name="mr_engine"),
-            # asyncio.create_task(_supervise("convergence", convergence_engine.run),       name="convergence"),
-            # asyncio.create_task(_supervise("breakout_guard", breakout_guard.run),        name="breakout_guard"),
-            asyncio.create_task(_supervise("smc_scanner", smc_scanner.run),              name="smc_scanner"),
-        ])
-        from quant.amd_engine import amd_engine
-        # tasks.append(asyncio.create_task(amd_engine.run(), name="amd_engine"))  # v6.2.1: DISABLED
-    else:
-        logger.info("[Main] SCANNERS_DISABLED=True — all AUTO scanners are OFF for validation")
 
     if config.LATENCY_ENABLED:
         tasks.append(asyncio.create_task(run_latency_monitor(), name="latency"))
@@ -737,6 +598,9 @@ async def startup():
             self_correction.run_review_loop(), name="self_correction"
         ))
 
+    from quant.amd_engine import amd_engine
+    tasks.append(asyncio.create_task(amd_engine.run()))
+
     if config.ML_DOLLAR_BARS_ENABLED:
         from quant.dollar_bar_engine import get_engine as get_dollar_engine
         dollar_engine = get_dollar_engine("XAUUSD")
@@ -744,20 +608,114 @@ async def startup():
             _supervise("dollar_bars", dollar_engine.run), name="dollar_bars"
         ))
 
+    # v8.0: London Open Breakout scanner
+    try:
+        from quant.london_sniper import london_sniper
+        tasks.append(asyncio.create_task(
+            _supervise("london_sniper", london_sniper.run), name="london_sniper"
+        ))
+    except Exception as _ls_err:
+        logger.warning("[Main] London Sniper not loaded: %s", _ls_err)
+
+    # v8.0: DXY Canary Engine
+    try:
+        from quant.canary_engine import canary_engine
+        tasks.append(asyncio.create_task(
+            _supervise("canary_engine", canary_engine.run), name="canary_engine"
+        ))
+    except Exception as _ce_err:
+        logger.warning("[Main] Canary Engine not loaded: %s", _ce_err)
+
+    # v8.2: Breakout Hunter
+    try:
+        tasks.append(asyncio.create_task(
+            _supervise("breakout_hunter", breakout_hunter.run), name="breakout_hunter"
+        ))
+    except Exception as _bh_err:
+        logger.warning("[Main] Breakout Hunter not loaded: %s", _bh_err)
+
     if _ato_available and getattr(config, "ATO_ENABLED", True):
         tasks.append(asyncio.create_task(run_orchestrator_monitor(), name="ato_monitor"))
+
+
+    # v7.1: What-if ledger backfill loop
+    async def what_if_backfill_loop():
+        """Fill in future prices for rejected signals."""
+        while True:
+            try:
+                await asyncio.sleep(300)
+                try:
+                    import MetaTrader5 as _wif_mt5
+                    from datetime import datetime as _wif_dt
+                    with db_manager.get_connection() as _wif_conn:
+                        _wif_rows = _wif_conn.execute(
+                            "SELECT id, symbol, rejected_at, entry_price, sl, tp1, action "
+                            "FROM what_if_ledger "
+                            "WHERE price_15min IS NULL "
+                            "AND rejected_at < datetime('now', '-16 minutes') "
+                            "LIMIT 20"
+                        ).fetchall()
+                        for _wif_row in _wif_rows:
+                            try:
+                                _wid = _wif_row[0]
+                                _wsym = _wif_row[1]
+                                _wrej = _wif_row[2]
+                                _wentry = _wif_row[3]
+                                _wsl = _wif_row[4]
+                                _wtp1 = _wif_row[5]
+                                _wact = _wif_row[6]
+                                _wrates = _wif_mt5.copy_rates_from(
+                                    _wsym, _wif_mt5.TIMEFRAME_M1,
+                                    _wif_dt.fromisoformat(_wrej), 65
+                                )
+                                if _wrates is not None and len(_wrates) >= 15:
+                                    _wp5 = float(_wrates[4]["close"]) if len(_wrates) > 4 else None
+                                    _wp15 = float(_wrates[14]["close"]) if len(_wrates) > 14 else None
+                                    _wp30 = float(_wrates[29]["close"]) if len(_wrates) > 29 else None
+                                    _wp60 = float(_wrates[59]["close"]) if len(_wrates) > 59 else None
+                                    _wtp = 0
+                                    _wslh = 0
+                                    _wvpnl = 0.0
+                                    if _wtp1 and _wsl and _wentry:
+                                        for _wr in _wrates[:60]:
+                                            _wc = float(_wr["close"])
+                                            if _wact == "BUY":
+                                                if _wc >= _wtp1: _wtp = 1; break
+                                                if _wc <= _wsl: _wslh = 1; break
+                                            else:
+                                                if _wc <= _wtp1: _wtp = 1; break
+                                                if _wc >= _wsl: _wslh = 1; break
+                                        if _wtp: _wvpnl = abs(_wtp1 - _wentry) * 100
+                                        elif _wslh: _wvpnl = -abs(_wsl - _wentry) * 100
+                                    _wif_conn.execute(
+                                        "UPDATE what_if_ledger SET "
+                                        "price_5min=?, price_15min=?, price_30min=?, price_60min=?, "
+                                        "would_hit_tp=?, would_hit_sl=?, virtual_pnl=? WHERE id=?",
+                                        (_wp5, _wp15, _wp30, _wp60, _wtp, _wslh, _wvpnl, _wid)
+                                    )
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            except Exception as _wif_err:
+                logger.debug("[Main] What-if backfill error: %s", _wif_err)
+
+    tasks.append(asyncio.create_task(what_if_backfill_loop(), name="what_if"))
+
     logger.info(f"[Main] {len(tasks)} tasks launched. System is live.")
     try:
         from utils.notifier import notify
-        import datetime as _dt
         _eq = mt5_executor.get_account_equity()
         notify(
-            f"🟢 *OmniSignal Alpha v6.0 ONLINE*\n"
+            f"🟢 *OmniSignal Alpha v6.3.1 ONLINE*\n"
             f"\n"
             f"Mode: {config.OPERATING_MODE} | Phase: {config.PROP_FIRM_PHASE}\n"
             f"Equity: ${_eq:,.2f}\n"
             f"Daily DD Limit: {config.DAILY_DRAWDOWN_LIMIT_PCT}%\n"
-            f"Tasks active: {len(tasks)}\n"
+            f"Anti-Hedge: ON\n"
+            f"Dampener Floor: {getattr(config, 'DAMPENER_LOT_FLOOR', 0.03)}\n"
+            f"Scanners: ALL ACTIVE\n"
+            f"Tasks: {len(tasks)}\n"
             f"\n"
             f"All systems nominal. Trading is live."
         )
@@ -767,7 +725,6 @@ async def startup():
 
 
 async def nightly_optimization_loop():
-    """Run ML retraining once per day during low-activity hours (03:00-04:00 UTC)."""
     while True:
         try:
             from datetime import datetime, timezone
@@ -777,6 +734,17 @@ async def nightly_optimization_loop():
                 report = await win_model.nightly_optimization()
                 if report:
                     logger.info(f"[Main] Nightly optimization complete.")
+
+                # v8.0: Self-Optimizer nightly analysis
+                try:
+                    from quant.self_optimizer import self_optimizer
+                    _so_adj = self_optimizer.run_nightly()
+                    logger.info("[Main] Self-Optimizer: streak=%s, %d top sources, %d losing hours",
+                                _so_adj.get("current_streak", "?"),
+                                len(_so_adj.get("top_sources", [])),
+                                len(_so_adj.get("losing_hours", [])))
+                except Exception as _so_err:
+                    logger.error("[Main] Self-Optimizer error: %s", _so_err)
                 await asyncio.sleep(3600)
             else:
                 await asyncio.sleep(300)
@@ -786,7 +754,6 @@ async def nightly_optimization_loop():
 
 
 async def macro_update_loop():
-    """Refresh macro/COT data every 4 hours."""
     while True:
         try:
             await asyncio.sleep(14400)
@@ -832,3 +799,7 @@ if __name__ == "__main__":
         mt5_executor.disconnect()
         loop.close()
         logger.info("[Main] Event loop closed.")
+
+
+
+

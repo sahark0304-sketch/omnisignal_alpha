@@ -253,6 +253,32 @@ def init_db():
         except Exception:
             pass
 
+    try:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS what_if_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_id INTEGER,
+                    symbol TEXT,
+                    action TEXT,
+                    entry_price REAL,
+                    sl REAL,
+                    tp1 REAL,
+                    reject_reason TEXT,
+                    rejected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    price_at_rejection REAL,
+                    price_5min REAL,
+                    price_15min REAL,
+                    price_30min REAL,
+                    price_60min REAL,
+                    would_hit_tp INTEGER,
+                    would_hit_sl INTEGER,
+                    virtual_pnl REAL
+                )
+            """)
+    except Exception:
+        pass
+
     logger.info("[DB] v2.0 schema initialized.")
 
 
@@ -352,7 +378,7 @@ def get_open_trades() -> List[Dict]:
         rows = conn.execute(
             "SELECT * FROM trades WHERE status NOT IN ('CLOSED')"
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [{k: r[k] for k in r.keys()} for r in rows]
 
 def get_closed_trades(limit: int = 500) -> List[Dict]:
     with get_connection() as conn:
@@ -364,7 +390,7 @@ def get_closed_trades(limit: int = 500) -> List[Dict]:
             ORDER BY t.close_time DESC
             LIMIT ?
         """, (limit,)).fetchall()
-    return [dict(r) for r in rows]
+    return [{k: r[k] for k in r.keys()} for r in rows]
 
 
 # ── ANALYTICS ─────────────────────────────────────────────────────────────────
@@ -385,7 +411,7 @@ def get_equity_curve(limit: int = 500) -> List[Dict]:
             SELECT ts, equity, daily_pnl FROM equity_snapshots
             ORDER BY ts DESC LIMIT ?
         """, (limit,)).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    return [{k: r[k] for k in r.keys()} for r in reversed(rows)]
 
 def insert_equity_snapshot(equity: float, balance: float,
                             open_trades: int, daily_pnl: float):
@@ -411,7 +437,7 @@ def get_source_performance() -> List[Dict]:
             GROUP BY s.source
             ORDER BY net_pnl DESC
         """).fetchall()
-    return [dict(r) for r in rows]
+    return [{k: r[k] for k in r.keys()} for r in rows]
 
 def log_audit(event_type: str, details: Dict):
     with get_connection() as conn:
@@ -627,7 +653,7 @@ def get_recent_closed_trades_with_session(limit: int = 200) -> List[Dict]:
                 ORDER BY t.close_time DESC
                 LIMIT ?
             """, (limit,)).fetchall()
-        return [dict(r) for r in rows]
+        return [{k: r[k] for k in r.keys()} for r in rows]
     except Exception as e:
         logger.error(f"[DB] get_recent_closed_trades_with_session failed: {e}")
         return []
@@ -666,7 +692,7 @@ def get_forensic(ticket: int) -> Optional[Dict]:
             "SELECT * FROM trade_forensics WHERE ticket=? ORDER BY id DESC LIMIT 1",
             (ticket,)
         ).fetchone()
-    return dict(row) if row else None
+    return {k: row[k] for k in row.keys()} if row else None
 
 def get_recent_signals(limit: int = 5) -> list:
     """Return recent executed signals from audit_log (RISK_APPROVED entries)."""
@@ -695,3 +721,51 @@ def get_recent_signals(limit: int = 5) -> list:
     except Exception:
         return []
 
+
+def get_last_trade_time():
+    """Return open_time of the most recently opened trade."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT MAX(open_time) as last_time FROM trades"
+            ).fetchone()
+            return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+def get_last_closed_trade(symbol=None):
+    """Return the most recently closed trade (optionally filtered by symbol)."""
+    try:
+        with get_connection() as conn:
+            if symbol:
+                row = conn.execute(
+                    "SELECT * FROM trades WHERE status='CLOSED' AND symbol=? "
+                    "ORDER BY close_time DESC LIMIT 1", (symbol,)
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM trades WHERE status='CLOSED' "
+                    "ORDER BY close_time DESC LIMIT 1"
+                ).fetchone()
+            if row:
+                return {k: row[k] for k in row.keys()}
+            return None
+    except Exception:
+        return None
+
+def log_rejected_signal_price(signal_id=0, symbol="", action="",
+                               entry_price=None, sl=None, tp1=None,
+                               reject_reason=""):
+    """Log rejected signal for what-if analysis."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO what_if_ledger "
+                "(signal_id, symbol, action, entry_price, sl, tp1, "
+                "reject_reason, rejected_at, price_at_rejection) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)",
+                (signal_id, symbol, action, entry_price, sl, tp1,
+                 reject_reason, entry_price)
+            )
+    except Exception:
+        pass

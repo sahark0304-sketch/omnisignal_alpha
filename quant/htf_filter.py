@@ -550,22 +550,45 @@ def check_htf_trend_gate(
 
         both_bearish = m15_trend == "BEARISH" and m5_trend == "BEARISH"
         both_bullish = m15_trend == "BULLISH" and m5_trend == "BULLISH"
+        combined_gap = m15_gap + m5_gap
 
-        if action == "BUY" and both_bearish and (m15_gap + m5_gap) > 15:
-            reason = (
-                f"HTF TREND GATE: BUY blocked | M15={m15_trend} ({m15_gap:.0f}p) "
-                f"M5={m5_trend} ({m5_gap:.0f}p) | Both timeframes bearish"
-            )
-            logger.info(f"[HTF] {reason}")
-            return False, reason
+        # v7.1: Softened HTF gate - only block STRONG disagreement
+        # Research: HTF gate rejected 50 signals, 37 would have won (74% false reject)
+        # New: block only when combined gap > 30 (strong trend), allow weak with warning
+        _strong_threshold = 30
+        _weak_threshold = 15
 
-        if action == "SELL" and both_bullish and (m15_gap + m5_gap) > 15:
-            reason = (
-                f"HTF TREND GATE: SELL blocked | M15={m15_trend} ({m15_gap:.0f}p) "
-                f"M5={m5_trend} ({m5_gap:.0f}p) | Both timeframes bullish"
-            )
-            logger.info(f"[HTF] {reason}")
-            return False, reason
+        if action == "BUY" and both_bearish:
+            if combined_gap > _strong_threshold:
+                reason = (
+                    f"HTF TREND GATE: BUY blocked | M15={m15_trend} ({m15_gap:.0f}p) "
+                    f"M5={m5_trend} ({m5_gap:.0f}p) | STRONG bearish ({combined_gap:.0f}p)"
+                )
+                logger.info(f"[HTF] {reason}")
+                return False, reason
+            elif combined_gap > _weak_threshold:
+                reason = (
+                    f"HTF_WEAK_AGAINST: BUY allowed with caution | M15={m15_trend} ({m15_gap:.0f}p) "
+                    f"M5={m5_trend} ({m5_gap:.0f}p) | Weak bearish ({combined_gap:.0f}p) - lot penalty advised"
+                )
+                logger.info(f"[HTF] {reason}")
+                return True, reason
+
+        if action == "SELL" and both_bullish:
+            if combined_gap > _strong_threshold:
+                reason = (
+                    f"HTF TREND GATE: SELL blocked | M15={m15_trend} ({m15_gap:.0f}p) "
+                    f"M5={m5_trend} ({m5_gap:.0f}p) | STRONG bullish ({combined_gap:.0f}p)"
+                )
+                logger.info(f"[HTF] {reason}")
+                return False, reason
+            elif combined_gap > _weak_threshold:
+                reason = (
+                    f"HTF_WEAK_AGAINST: SELL allowed with caution | M15={m15_trend} ({m15_gap:.0f}p) "
+                    f"M5={m5_trend} ({m5_gap:.0f}p) | Weak bullish ({combined_gap:.0f}p) - lot penalty advised"
+                )
+                logger.info(f"[HTF] {reason}")
+                return True, reason
 
         return True, ""
 
